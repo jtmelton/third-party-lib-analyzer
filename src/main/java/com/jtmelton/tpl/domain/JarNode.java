@@ -12,9 +12,6 @@ public class JarNode {
   @GeneratedValue
   private Long id;
 
-  @Property(name="version")
-  private String version;
-
   @Property(name="name")
   private String name;
 
@@ -29,14 +26,6 @@ public class JarNode {
 
   public void setId(Long id) {
     this.id = id;
-  }
-
-  public String getVersion() {
-    return version;
-  }
-
-  public void setVersion(String version) {
-    this.version = version;
   }
 
   public String getName() {
