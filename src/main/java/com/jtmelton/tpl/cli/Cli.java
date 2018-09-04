@@ -30,26 +30,30 @@ public class Cli {
   private static String dbDirectory = null;
 
   @Argument(value = "jarNames",
-      delimiter = ",",
       description = "Comma delimited Jar name search terms for finding affected user classes")
   private static String[] jarNames = null;
 
   @Argument(value = "searchDepth",
-      description = "How deep to search graph DB for Jar->user class. Defaults to 10")
+      description = "How deep to search graph DB for Jar->user class. Defaults to 5")
   private static String searchDepth = "5";
 
   @Argument(value = "outputFile",
       description = "File containing output with dependency relationships")
-  private static String outputFile = "output.json";
+  private static String outputFile = "output";
 
   @Argument(value = "searchOnly",
       description = "Search existing DB without building/updating it")
   private static boolean searchOnly = false;
 
+  @Argument(value ="threads",
+      description = "Number of threads to use for graph construction. Defaults to 5")
+  private static int threads = 5;
+
   public static void main(String[] args) {
     new Cli().parseArgs(args);
 
-    ThirdPartyLibraryAnalyzer analyzer = new ThirdPartyLibraryAnalyzer(jarsDirectory, classesDirectory, dbDirectory);
+    ThirdPartyLibraryAnalyzer analyzer =
+            new ThirdPartyLibraryAnalyzer(jarsDirectory, classesDirectory, dbDirectory, threads);
       try {
         if(!searchOnly) {
           analyzer.buildDependencyGraph();
@@ -63,8 +67,10 @@ public class Cli {
         if(jarNames == null && searchOnly) {
           LOG.warn("Missing arg -jarNames");
         }
+      } catch(InterruptedException ie) {
+        LOG.error("Process interrupted while waiting for threads to complete", ie);
       } catch (IOException ioe) {
-        LOG.error("IOException encountered", ioe);
+        LOG.error("Error accessing file system", ioe);
       }
   }
 
