@@ -1,93 +1,81 @@
 package com.jtmelton.tpl.report;
 
-import com.jtmelton.tpl.ThirdPartyLibraryAnalyzer;
-import com.jtmelton.tpl.domain.ClassNode;
-import com.jtmelton.tpl.domain.JarNode;
 import org.json.JSONArray;
 import org.json.JSONObject;
-import org.neo4j.ogm.model.Result;
-import org.neo4j.ogm.session.Session;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
-
-import static com.jtmelton.tpl.utils.QueryUtil.findOwningJarNames;
 
 public class JsonReporter implements IReporter {
 
-  private final Session session;
-
-  private final String resultKey;
+  private static final Logger LOG = LoggerFactory.getLogger(JsonReporter.class);
 
   private JSONObject jsonRoot = new JSONObject();
 
   private JSONArray relationships = new JSONArray();
 
-  public JsonReporter(Session session, String resultKey) {
-    this.session = session;
-    this.resultKey = resultKey;
+  private JSONArray currentChains;
 
+  private JSONObject currentChainEntry;
+
+  public JsonReporter() {
     jsonRoot.put("DependencyRelationships", relationships);
   }
 
   @Override
-  public void processResult(Result results, Collection<String> jarNames) {
-    if(!results.iterator().hasNext()) {
-      return;
-    }
-
+  public void preProcess(Collection<String> jars) {
     JSONObject matchedJar = new JSONObject();
-    JSONArray chains = new JSONArray();
+    currentChains = new JSONArray();
 
-    matchedJar.put("chains", chains);
-    matchedJar.put("jars", jarNames);
-    process(results).forEach(chains::put);
+    matchedJar.put("chains", currentChains);
+    matchedJar.put("jars", jars);
 
     relationships.put(matchedJar);
   }
 
   @Override
-  public String getReport() {
-    return jsonRoot.toString(2);
+  public void chainEntryStart() {
+    currentChainEntry = new JSONObject();
+    JSONArray chain = new JSONArray();
+    currentChainEntry.put("chain", chain);
   }
 
-  private Collection<JSONObject> process(Result results) {
-    Collection<JSONObject> entries = new ArrayList<>();
-    Set<ClassNode> processedNodes = new HashSet<>();
+  @Override
+  public void chainEntryEnd() {
+    currentChains.put(currentChainEntry);
+  }
 
-    result: for(Map<String, Object> result : results) {
-      ArrayList nodes = (ArrayList) result.get(resultKey);
+  @Override
+  public void addChainEntryUserClass(String className) {
+    currentChainEntry.put("userClass", className);
+  }
 
-      JSONObject classEntry = new JSONObject();
-      JSONArray chain = new JSONArray();
-      classEntry.put("chain", chain);
+  @Override
+  public void addChainLink(String className, Collection<String> jars) {
+    JSONObject link = new JSONObject();
+    link.put("class", className);
+    link.put("jars", jars);
 
-      for(int i = nodes.size() - 1;i >= 0;i--) {
-        if(nodes.get(i) instanceof JarNode) {
-          break;
-        }
+    currentChainEntry.getJSONArray("chain").put(link);
+  }
 
-        ClassNode classNode = (ClassNode) nodes.get(i);
+  @Override
+  public void report(String outputFile) {
+    Path outputPath = Paths.get(outputFile + ".json");
 
-        if(classNode.isCustom()) {
-          if(processedNodes.contains(classNode)) {
-            continue result;
-          }
+    String report = jsonRoot.toString(2);
 
-          classEntry.put("userClass", classNode.getName());
-          processedNodes.add(classNode);
-        }
+    LOG.info("Writing JSON results: {}", outputPath.toAbsolutePath());
 
-        JSONObject link = new JSONObject();
-        link.put("class", classNode.getName());
-        link.put("jars", findOwningJarNames(session, classNode));
-        chain.put(link);
-      }
-
-      entries.add(classEntry);
+    try {
+      Files.write(outputPath, report.getBytes());
+    } catch(IOException ioe) {
+      LOG.warn("Failed to write JSON results", ioe);
     }
-
-    return entries;
   }
 }
