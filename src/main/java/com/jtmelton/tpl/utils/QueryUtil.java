@@ -1,51 +1,145 @@
 package com.jtmelton.tpl.utils;
 
+import com.jtmelton.tpl.results.QueryResult;
 import com.jtmelton.tpl.domain.ClassNode;
 import com.jtmelton.tpl.domain.JarNode;
-import org.neo4j.ogm.cypher.ComparisonOperator;
-import org.neo4j.ogm.cypher.Filter;
-import org.neo4j.ogm.model.Result;
-import org.neo4j.ogm.session.Session;
+import org.neo4j.graphdb.GraphDatabaseService;
+import org.neo4j.graphdb.QueryExecutionException;
+import org.neo4j.graphdb.Result;
+import org.neo4j.graphdb.Transaction;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
 
 public class QueryUtil {
 
-  private final static String JAR_TO_CLASS_QUERY = "MATCH (jar:`JarNode`) WHERE jar.`name` CONTAINS { `searchTerm` } WITH jar " +
-          "MATCH path = ((jar)-[:`classes`]-(:`ClassNode`)<-[:`classesDependedOn`*..%s]-(class:`ClassNode`)) " +
-          "WHERE class.`custom` = true RETURN nodes(path)";
+  private static final Logger LOG = LoggerFactory.getLogger(QueryUtil.class);
 
-  private static final String CLASS_TO_OWNING_JAR_QUERY = "MATCH (class:`ClassNode`) WHERE ID(class) = { `id` } WITH class " +
-          "MATCH (class)-[:classes]-(jar:`JarNode`) RETURN jar";
+  private static final String JAR_TO_CLASS_QUERY = "MATCH (jar:Jar) WHERE jar.name CONTAINS { `searchTerm` } WITH jar " +
+        "MATCH path = ((jar)<-[:classes]-(c1:Class)<-[:classesDependedOn*..%s]-(c2:Class)) " +
+        "WHERE c2.custom = true RETURN extract(n IN nodes(path) | n.name) AS extracted, jar.name";
 
-  public static Result findAffectedUserClasses(Session session, String searchTerm, String depth) {
-    Map<String, String> params = new HashMap<>();
-    params.put("searchTerm", searchTerm);
+  private static final String CLASS_TO_OWNING_JAR_QUERY = "MATCH (class:Class) WHERE class.name = { `name` } WITH class " +
+        "MATCH (class)-[:classes]-(jar:Jar) RETURN jar.name";
 
-    String query = String.format(JAR_TO_CLASS_QUERY, depth);
+  private static final String WRITE_JAR_QUERY = "CREATE (n:Jar { name: { `name` } }) RETURN ID(n)";
 
-    return session.query(query, params);
-  }
+  private static final String WRITE_CLASS_QUERY = "CREATE (n:Class { name: { `name` }, custom: { `custom` } }) RETURN ID(n)";
 
-  public static Collection<String> findOwningJarNames(Session session, ClassNode classNode) {
-    if(classNode.isCustom()) {
-      return Arrays.asList("user");
+  private static final String CLASS_JAR_RELATIONSHIP_QUERY = "MATCH (jar:Jar), (class:Class) WHERE ID(jar) = { `jarID` } " +
+          "AND ID(class) = { `classID` } CREATE (jar)<-[rel:classes]-(class)";
+
+  private static final String CLASS_DEPCLASS_RELATIONSHIP_QUERY = "MATCH (class:Class), (dep:Class) " +
+          "WHERE ID(class) = { `classID` } AND ID(dep) = { `depID` } CREATE (class)-[rel:classesDependedOn]->(dep)";
+
+  public static QueryResult findAffectedUserClasses(GraphDatabaseService graphDb,
+                                                                       String searchTerm, String depth) {
+    QueryResult results = new QueryResult();
+
+    try(Transaction tx = graphDb.beginTx()) {
+      Map<String, Object> params = new HashMap<>();
+      params.put("searchTerm", searchTerm);
+
+      String query = String.format(JAR_TO_CLASS_QUERY, depth);
+      Result result = graphDb.execute(query, params);
+
+      while(result.hasNext()) {
+        Map<String, Object> map = result.next();
+        List<String> chain = (List<String>) map.get("extracted");
+        String jarName = (String) map.get("jar.name");
+
+        results.addJarName(jarName);
+        results.addClassChain(chain);
+      }
+
+      tx.success();
+    } catch (QueryExecutionException qee) {
+      LOG.warn("Jar to affected user classes query failed", qee);
     }
 
-    Map<String, Long> params = new HashMap<>();
-    params.put("id", classNode.getId());
-
-    List<JarNode> jars = (List<JarNode>) session.query(JarNode.class, CLASS_TO_OWNING_JAR_QUERY, params);
-
-    Collection<String> result = new ArrayList<>();
-    jars.forEach(j -> result.add(j.getName()));
-
-    return result;
+    return results;
   }
 
-  public static Collection<JarNode> findMatchingJars(Session session, String searchTerm) {
-    Filter filter = new Filter("name", ComparisonOperator.CONTAINING, searchTerm);
-    return session.loadAll(JarNode.class, filter);
+  public static Collection<String> findOwningJarNames(GraphDatabaseService graphDb, String className) {
+    Set<String> jarNames = new HashSet<>();
+
+    try(Transaction tx = graphDb.beginTx()) {
+      Map<String, Object> params = new HashMap<>();
+      params.put("name", className);
+
+      Result result = graphDb.execute(CLASS_TO_OWNING_JAR_QUERY, params);
+
+      while(result.hasNext()) {
+        String jarName = (String) result.next().get("jar.name");
+        jarNames.add(jarName);
+      }
+
+      tx.success();
+    } catch (QueryExecutionException qee) {
+      LOG.warn("Class to owning jars query failed", qee);
+    }
+
+    return jarNames;
   }
 
+  public static void writeJarNode(GraphDatabaseService graphDb, JarNode jarNode) {
+    try(Transaction tx = graphDb.beginTx()) {
+      Map<String, Object> params = new HashMap<>();
+      params.put("name", jarNode.getName());
+
+      Result result = graphDb.execute(WRITE_JAR_QUERY, params);
+
+      while(result.hasNext()) {
+        long id = (Long) result.next().get("ID(n)");
+        jarNode.setId(id);
+      }
+      tx.success();
+    } catch (QueryExecutionException qee) {
+      LOG.warn("Jar creation query failed", qee);
+    }
+  }
+
+  public static void writeClassNode(GraphDatabaseService graphDb, ClassNode classNode) {
+    try(Transaction tx = graphDb.beginTx()) {
+      Map<String, Object> params = new HashMap<>();
+      params.put("name", classNode.getName());
+      params.put("custom", classNode.isCustom());
+
+      Result result = graphDb.execute(WRITE_CLASS_QUERY, params);
+      while(result.hasNext()) {
+        long id = (Long) result.next().get("ID(n)");
+        classNode.setId(id);
+      }
+      tx.success();
+    } catch (QueryExecutionException qee) {
+      LOG.warn("Class creation query failed", qee);
+    }
+  }
+
+  public static void writeClassToJarRel(GraphDatabaseService graphDb, JarNode jarNode, ClassNode classNode) {
+    try(Transaction tx = graphDb.beginTx()) {
+      Map<String, Object> params = new HashMap<>();
+      params.put("jarID", jarNode.getId());
+      params.put("classID", classNode.getId());
+
+      graphDb.execute(CLASS_JAR_RELATIONSHIP_QUERY, params);
+      tx.success();
+    } catch (QueryExecutionException qee) {
+      LOG.warn("Class to owning jar relationship query failed", qee);
+    }
+  }
+
+  public static void writeClassToClassRel(GraphDatabaseService graphDb, ClassNode classNode, ClassNode dependency) {
+    try(Transaction tx = graphDb.beginTx()) {
+      Map<String, Object> params = new HashMap<>();
+      params.put("classID", classNode.getId());
+      params.put("depID", dependency.getId());
+
+      graphDb.execute(CLASS_DEPCLASS_RELATIONSHIP_QUERY, params);
+      tx.success();
+    } catch (QueryExecutionException qee) {
+      LOG.warn("Class to dependency class relationship query failed", qee);
+    }
+  }
 }

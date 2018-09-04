@@ -4,17 +4,14 @@ import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
 import com.jtmelton.tpl.domain.ClassNode;
 import com.jtmelton.tpl.domain.JarNode;
-import com.jtmelton.tpl.report.IReporter;
 import com.jtmelton.tpl.report.JsonReporter;
+import com.jtmelton.tpl.report.StdOutReporter;
+import com.jtmelton.tpl.results.QueryResult;
+import com.jtmelton.tpl.results.ResultsProcessor;
 import com.jtmelton.tpl.utils.JavassistUtil;
 import com.jtmelton.tpl.utils.QueryUtil;
 import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.factory.GraphDatabaseFactory;
-import org.neo4j.ogm.drivers.embedded.driver.EmbeddedDriver;
-import org.neo4j.ogm.model.Result;
-import org.neo4j.ogm.session.Session;
-import org.neo4j.ogm.session.SessionFactory;
-import org.neo4j.ogm.transaction.Transaction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,6 +21,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 import static java.util.concurrent.TimeUnit.HOURS;
@@ -33,8 +32,6 @@ import static java.util.concurrent.TimeUnit.NANOSECONDS;
 public class ThirdPartyLibraryAnalyzer {
 
   private static final Logger LOG = LoggerFactory.getLogger(ThirdPartyLibraryAnalyzer.class);
-
-  private final String DOMAIN_PACKAGE = "com.jtmelton.tpl.domain";
 
   private final String jarsDirectory;
 
@@ -51,105 +48,134 @@ public class ThirdPartyLibraryAnalyzer {
   // ******* MAP OF {class -> classes referenced by this class} *******
   private final Multimap<String, String> classToUsedClassesMap = HashMultimap.create();
 
-  private Session session;
+  private final Collection<Path> jars = new ArrayList<>();
+
+  private final int threads;
+
+  private GraphDatabaseService graphDb;
+
+  private AtomicInteger classesProcessed = new AtomicInteger();
+
+  private AtomicInteger jarsProcessed = new AtomicInteger();
+
+  private ExecutorService executor;
+
+  private long startTime = System.nanoTime();
 
   public ThirdPartyLibraryAnalyzer(String jarsDirectory, String classesDirectory,
-                                   String dbDirectory) {
+                                   String dbDirectory, int threads) {
     this.jarsDirectory = jarsDirectory;
     this.classesDirectory = classesDirectory;
     this.dbDirectory = dbDirectory;
+    this.executor = Executors.newFixedThreadPool(threads);
+    this.threads = threads;
   }
 
-  public void buildDependencyGraph() throws IOException {
-    dbSetup();
+  private void dbSetup() {
+    GraphDatabaseFactory factory = new GraphDatabaseFactory();
+    graphDb = factory.newEmbeddedDatabase(new File(dbDirectory));
+    Runtime.getRuntime().addShutdownHook(new Thread(graphDb::shutdown));
+  }
 
-    long startTime = System.nanoTime();
+  public void buildDependencyGraph() throws IOException, InterruptedException {
+    dbSetup();
 
     Collection<Path> customClasses = findPathsByExt(new File(classesDirectory), ".class");
 
     LOG.info("Built class file paths, will process {} paths", customClasses.size());
     customClassNames.addAll(JavassistUtil.collectClassFiles(customClasses));
 
-    LOG.info("# of custom classes: {}", customClassNames.size());
-    LOG.info("Analyzing class files: {}", customClasses.size());
+    LOG.info("Analyzing {} class files", customClassNames.size());
     Collection<ClassNode> classNodes = JavassistUtil.analyzeClassFiles(customClasses, customClassNames, classToUsedClassesMap);
 
-    Collection<Path> jars = findPathsByExt(new File(jarsDirectory), ".jar");
+    jars.addAll(findPathsByExt(new File(jarsDirectory), ".jar"));
 
-    LOG.info("# jar files: {}", jars.size());
+    LOG.info("Analyzing {} jar files", jars.size());
     Collection<JarNode> jarNodes = JavassistUtil.analyzeJarFiles(jars, externalClassNodes, classToUsedClassesMap);
-    LOG.info("# external classes files: {}", externalClassNodes.size());
+    LOG.info("# of external class files found: {}", externalClassNodes.size());
 
-    buildDependencyRelationship(classNodes);
-    buildDependencyRelationship(externalClassNodes.values());
-    jarNodes.forEach(this::writeToDb);
+    LOG.info("Writing user classes to db");
+    classNodes.forEach(c -> executor.submit(writeClassNode(c)));
+
+    LOG.info("Writing external classes to db");
+    externalClassNodes.values().forEach(c -> executor.submit(writeClassNode(c)));
+
+    LOG.info("Writing jars and jar class relationships to db");
+    jarNodes.forEach(j -> executor.submit(() -> {
+      QueryUtil.writeJarNode(graphDb, j);
+      jarsProcessed.incrementAndGet();
+      j.getClassNodes().forEach(c -> QueryUtil.writeClassToJarRel(graphDb, j, c));
+      LOG.info("Written {} of {} jars and jar relationships to db",
+              jarsProcessed.get(), jarNodes.size());
+    }));
+
+    // Wait for all current threads to complete then spin up new thread pool.
+    // All class nodes must be written to DB before relationships can be written
+    executor.shutdown();
+    executor.awaitTermination(24, HOURS);
+    executor = Executors.newFixedThreadPool(threads);
+
+    classesProcessed = new AtomicInteger();
+
+    LOG.info("Writing user class dependency relationships to db");
+    classNodes.forEach(c -> executor.submit(buildClassRelationships(c)));
+
+    LOG.info("Writing external class dependency relationships to db");
+    externalClassNodes.values().forEach(c -> executor.submit(buildClassRelationships(c)));
+
+    executor.shutdown();
+    executor.awaitTermination(24, HOURS);
 
     long elapsedTime = System.nanoTime() - startTime;
-
     LOG.info("DB Construction time {}", formatElapsedTime(elapsedTime));
     LOG.info("Created relationships for {} user classes, {} external classes, " +
             "and {} jars", customClassNames.size(), externalClassNodes.size(), jars.size());
   }
 
-  public void reportAffectedClasses(Collection<String> searchTerms,
-                                    String depth, String outputFile) throws IOException {
-    if(session == null) {
+  public void reportAffectedClasses(Collection<String> searchTerms, String depth, String outputFile) {
+    if(graphDb == null) {
       dbSetup();
     }
 
-    String resultKey = "nodes(path)";
-
-    IReporter reporter = new JsonReporter(session, resultKey);
+    ResultsProcessor processor = new ResultsProcessor(graphDb);
+    processor.registerReporter(new JsonReporter());
+    processor.registerReporter(new StdOutReporter());
 
     for(String searchTerm : searchTerms) {
       LOG.info("Searching for classes affected by dependency {}", searchTerm);
 
-      Result result = QueryUtil.findAffectedUserClasses(session, searchTerm, depth);
-      Collection<JarNode> matchedJars = QueryUtil.findMatchingJars(session, searchTerm);
-
-      Collection<String> jarNames = new ArrayList<>();
-      matchedJars.forEach(j -> jarNames.add(j.getName()));
-
-      reporter.processResult(result, jarNames);
+      QueryResult results = QueryUtil.findAffectedUserClasses(graphDb, searchTerm, depth);
+      LOG.info("Processing results for {} import chains", results.getClassChains().size());
+      processor.process(results);
     }
 
-    Path outputPath = Paths.get(outputFile);
-
-    LOG.info("Writing JSON results: {}", outputPath.toAbsolutePath());
-    Files.write(outputPath, reporter.getReport().getBytes());
+    processor.generateReports(outputFile);
   }
 
-  private void buildDependencyRelationship(Collection<ClassNode> classNodes) {
-    for(ClassNode classNode : classNodes) {
-      for(String className : classToUsedClassesMap.get(classNode.getName())) {
-        if(className.equals(classNode.getName()) || !externalClassNodes.containsKey(className)) {
+  private Runnable buildClassRelationships(ClassNode classNode) {
+    return () -> {
+      for (String className : classToUsedClassesMap.get(classNode.getName())) {
+        if (className.equals(classNode.getName()) || !externalClassNodes.containsKey(className)) {
           continue;
         }
 
-        classNode.addDependedClass(externalClassNodes.get(className));
+        ClassNode externalClass = externalClassNodes.get(className);
+        QueryUtil.writeClassToClassRel(graphDb, classNode, externalClass);
       }
 
-      writeToDb(classNode);
-    }
+      int processed = classesProcessed.incrementAndGet();
+      LOG.info("Written {} out of {} class dependency relationships",
+              processed, externalClassNodes.size() + customClassNames.size());
+    };
   }
 
-  private void dbSetup() {
-    GraphDatabaseFactory factory = new GraphDatabaseFactory();
-    GraphDatabaseService graphDb = factory.newEmbeddedDatabase(new File(dbDirectory));
-    EmbeddedDriver driver = new EmbeddedDriver(graphDb);
-
-    SessionFactory sessionFactory = new SessionFactory(driver, DOMAIN_PACKAGE);
-    session = sessionFactory.openSession();
-
-    //Closes factory -> driver -> db
-    Runtime.getRuntime().addShutdownHook(new Thread(sessionFactory::close));
-  }
-
-  private void writeToDb(Object obj) {
-    try(Transaction tx = session.beginTransaction()) {
-      session.save(obj, 1);
-      tx.commit();
-    }
+  private Runnable writeClassNode(ClassNode classNode) {
+    return () -> {
+      QueryUtil.writeClassNode(graphDb, classNode);
+      classesProcessed.incrementAndGet();
+      LOG.info("Written {} of {} classes to db",
+              classesProcessed.get(), externalClassNodes.size());
+    };
   }
 
   private Collection<Path> findPathsByExt(File dir, String ext) throws IOException {

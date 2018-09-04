@@ -1,24 +1,17 @@
 package com.jtmelton.tpl.domain;
 
-import org.neo4j.ogm.annotation.*;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 
-@NodeEntity
 public class ClassNode {
-  @Id
-  @GeneratedValue
+
   private Long id;
 
-  @Property(name="name")
   private String name;
 
-  @Property(name="custom")
   private boolean custom;
 
-  @Relationship(type="classesDependedOn")
   private Collection<ClassNode> dependedClasses = new ArrayList<>();
 
   private String jarName;
