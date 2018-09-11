@@ -1,5 +1,7 @@
 package com.jtmelton.tpl.results;
 
+import com.google.common.collect.HashMultimap;
+import com.google.common.collect.Multimap;
 import com.jtmelton.tpl.report.IReporter;
 import org.neo4j.graphdb.GraphDatabaseService;
 
@@ -28,7 +30,7 @@ public class ResultsProcessor {
   public void process(QueryResult results) {
     reporters.forEach(r -> r.preProcess(results.getJarNames()));
 
-    Set<String> processedNodes = new HashSet<>();
+    Multimap<String, Integer> processedChains = HashMultimap.create();
 
     result: for(List<String> result : results.getClassChains()) {
 
@@ -42,16 +44,23 @@ public class ResultsProcessor {
 
         //last element is the user class found
         if(i == result.size() - 1) {
-          if(processedNodes.contains(className)) {
+          int jarHash = result.get(0).hashCode();
+
+          if(processedChains.get(className).contains(jarHash)) {
             continue result;
           }
 
           reporters.forEach(r -> r.addChainEntryUserClass(className));
-          processedNodes.add(className);
+          processedChains.put(className, result.get(0).hashCode());
 
           jarNames.add("user");
         } else {
-          jarNames.addAll(findOwningJarNames(graphDb, className));
+          Collection<String> jars = findOwningJarNames(graphDb, className);
+
+          String userClass = result.get(result.size() - 1);
+          jars.forEach(j -> processedChains.put(userClass, j.hashCode()));
+
+          jarNames.addAll(jars);
         }
 
         reporters.forEach(r ->
