@@ -4,6 +4,7 @@ import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
 import com.jtmelton.tpl.domain.ClassNode;
 import com.jtmelton.tpl.domain.JarNode;
+import com.jtmelton.tpl.report.VisualizationReporter;
 import com.jtmelton.tpl.report.JsonReporter;
 import com.jtmelton.tpl.report.StdOutReporter;
 import com.jtmelton.tpl.results.QueryResult;
@@ -60,7 +61,7 @@ public class ThirdPartyLibraryAnalyzer {
 
   private ExecutorService executor;
 
-  private long startTime = System.nanoTime();
+  private long startTime;
 
   public ThirdPartyLibraryAnalyzer(String jarsDirectory, String classesDirectory,
                                    String dbDirectory, int threads) {
@@ -78,6 +79,8 @@ public class ThirdPartyLibraryAnalyzer {
   }
 
   public void buildDependencyGraph() throws IOException, InterruptedException {
+    startTime = System.nanoTime();
+
     dbSetup();
 
     Collection<Path> customClasses = findPathsByExt(new File(classesDirectory), ".class");
@@ -133,6 +136,8 @@ public class ThirdPartyLibraryAnalyzer {
   }
 
   public void reportAffectedClasses(Collection<String> searchTerms, String depth, String outputFile) {
+    startTime = System.nanoTime();
+
     if(graphDb == null) {
       dbSetup();
     }
@@ -140,6 +145,7 @@ public class ThirdPartyLibraryAnalyzer {
     ResultsProcessor processor = new ResultsProcessor(graphDb);
     processor.registerReporter(new JsonReporter());
     processor.registerReporter(new StdOutReporter());
+    processor.registerReporter(new VisualizationReporter());
 
     for(String searchTerm : searchTerms) {
       LOG.info("Searching for classes affected by dependency {}", searchTerm);
@@ -150,6 +156,9 @@ public class ThirdPartyLibraryAnalyzer {
     }
 
     processor.generateReports(outputFile);
+
+    long elapsedTime = System.nanoTime() - startTime;
+    LOG.info("Report generation time {}", formatElapsedTime(elapsedTime));
   }
 
   private Runnable buildClassRelationships(ClassNode classNode) {
