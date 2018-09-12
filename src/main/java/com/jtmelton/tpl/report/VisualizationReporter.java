@@ -20,7 +20,7 @@ public class VisualizationReporter implements IReporter {
 
   private Map<String, JSONObject> edges = new HashMap<>();
 
-  private Map<Integer, Integer> cluterIds = new HashMap<>();
+  private Map<Integer, Integer> clusterIds = new HashMap<>();
 
   private int clusterIdCounter = 2;
 
@@ -66,16 +66,19 @@ public class VisualizationReporter implements IReporter {
 
       int jarsHash = jars.hashCode();
 
-      if(cluterIds.containsKey(jarsHash)) {
-        node.put("cluster", cluterIds.get(jarsHash));
+      if(clusterIds.containsKey(jarsHash)) {
+        node.put("cluster", clusterIds.get(jarsHash));
       } else {
         node.put("cluster", clusterIdCounter);
-        cluterIds.put(jarsHash, clusterIdCounter);
+        clusterIds.put(jarsHash, clusterIdCounter);
         clusterIdCounter++;
       }
 
       String jar = jars.iterator().next();
-      String[] jarSplit = jar.split(File.separator);
+
+      String splitter = File.separator.equals("\\") ? "\\\\" : File.separator;
+
+      String[] jarSplit = jar.split(splitter);
       node.put("jar", jarSplit[jarSplit.length - 1]);
 
       nodes.put(className, node);
