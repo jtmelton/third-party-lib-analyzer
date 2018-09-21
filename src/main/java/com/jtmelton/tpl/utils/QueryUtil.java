@@ -11,62 +11,159 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+
+import static java.util.concurrent.TimeUnit.HOURS;
 
 public class QueryUtil {
 
   private static final Logger LOG = LoggerFactory.getLogger(QueryUtil.class);
 
-  private static final String JAR_TO_CLASS_QUERY = "MATCH (jar:Jar) WHERE jar.name CONTAINS { `searchTerm` } WITH jar " +
-        "MATCH path = ((jar)<-[:classes]-(c1:Class)<-[:classesDependedOn*..%s]-(c2:Class)) " +
-        "WHERE c2.custom = true RETURN extract(n IN nodes(path) | n.name) AS extracted, jar.name";
-
-  private static final String CLASS_TO_OWNING_JAR_QUERY = "MATCH (class:Class) WHERE class.name = { `name` } WITH class " +
+  private static final String CLASS_TO_OWNING_JAR_QUERY = "MATCH (class:Class) WHERE ID(class) = { `id` } WITH class " +
         "MATCH (class)-[:classes]-(jar:Jar) RETURN jar.name";
 
   private static final String WRITE_JAR_QUERY = "CREATE (n:Jar { name: { `name` } }) RETURN ID(n)";
 
   private static final String WRITE_CLASS_QUERY = "CREATE (n:Class { name: { `name` }, custom: { `custom` } }) RETURN ID(n)";
 
+  private static final String WRITE_USER_CLASS_QUERY = "CREATE (n:UserClass { name: { `name` }, custom: { `custom` } }) RETURN ID(n)";
+
   private static final String CLASS_JAR_RELATIONSHIP_QUERY = "MATCH (jar:Jar), (class:Class) WHERE ID(jar) = { `jarID` } " +
           "AND ID(class) = { `classID` } CREATE (jar)<-[rel:classes]-(class)";
+
+  private static final String USER_CLASS_DEPCLASS_RELATIONSHIP_QUERY = "MATCH (class:UserClass), (dep:Class) " +
+          "WHERE ID(class) = { `classID` } AND ID(dep) = { `depID` } CREATE (class)-[rel:classesDependedOn]->(dep)";
 
   private static final String CLASS_DEPCLASS_RELATIONSHIP_QUERY = "MATCH (class:Class), (dep:Class) " +
           "WHERE ID(class) = { `classID` } AND ID(dep) = { `depID` } CREATE (class)-[rel:classesDependedOn]->(dep)";
 
-  public static QueryResult findAffectedUserClasses(GraphDatabaseService graphDb,
-                                                                       String searchTerm, String depth) {
-    QueryResult results = new QueryResult();
+  private static final String GET_ALL_JARS_QUERY = "MATCH (jar:Jar) RETURN collect({id: ID(jar), name: jar.name})";
 
-    try(Transaction tx = graphDb.beginTx()) {
-      Map<String, Object> params = new HashMap<>();
-      params.put("searchTerm", searchTerm);
+  private static final String JAR_TO_USER_CLASS_QUERY = "MATCH (jar:Jar) WHERE ID(jar) = { `id` } WITH jar " +
+          "MATCH path = ((jar)<-[:classes]-(:Class)<-[:classesDependedOn*..%s]-(:UserClass)) RETURN collect(extract(n IN nodes(path) | {id: ID(n), name: n.name}))";
 
-      String query = String.format(JAR_TO_CLASS_QUERY, depth);
-      Result result = graphDb.execute(query, params);
+  private static final AtomicInteger userClassCounter = new AtomicInteger();
 
-      while(result.hasNext()) {
-        Map<String, Object> map = result.next();
-        List<String> chain = (List<String>) map.get("extracted");
-        String jarName = (String) map.get("jar.name");
+  public static void searchJarToClass(GraphDatabaseService graphDb, QueryResult results, String depth,
+                                      String searchTerm, ExecutorService executor) {
 
-        results.addJarName(jarName);
-        results.addClassChain(chain);
+    List<Map<String, Object>> allJars = getAllJars(graphDb);
+
+    final List<Map<String, Object>> jars = new ArrayList<>();
+    jars.addAll(allJars.stream().filter(j -> ((String) j.get("name")).contains(searchTerm))
+            .collect(Collectors.toList()));
+
+    LOG.info("Retrieved {} jar nodes", jars.size());
+
+    if(!jars.isEmpty()) {
+      for(Map<String, Object> jar : jars) {
+        executor.submit(searchForUserClasses(graphDb, jar, jars.size(), results, depth));
       }
-
-      tx.success();
-    } catch (QueryExecutionException qee) {
-      LOG.warn("Jar to affected user classes query failed", qee);
     }
+  }
+
+  public static QueryResult findAffectedUserClasses(GraphDatabaseService graphDb,
+                                                    String searchTerm,
+                                                    String depth, boolean singleThreadSearch) throws InterruptedException {
+    final QueryResult results = new QueryResult(searchTerm);
+    ExecutorService executor;
+
+    if(singleThreadSearch) {
+      executor = Executors.newFixedThreadPool(1);
+    } else {
+      executor = Executors.newFixedThreadPool(2);
+    }
+
+    searchJarToClass(graphDb, results, depth, searchTerm, executor);
+
+    executor.shutdown();
+    executor.awaitTermination(24, HOURS);
+
+    userClassCounter.set(0);
 
     return results;
   }
 
-  public static Collection<String> findOwningJarNames(GraphDatabaseService graphDb, String className) {
+  private static List<Map<String, Object>> getAllJars(GraphDatabaseService graphDb) {
+    List<Map<String, Object>> allJars = new ArrayList<>();
+
+    try(Transaction tx = graphDb.beginTx()) {
+
+      Result query = graphDb.execute(GET_ALL_JARS_QUERY, Collections.EMPTY_MAP);
+
+      while (query.hasNext()) {
+        Map<String, Object> results = query.next();
+
+        String key = "collect({id: ID(jar), name: jar.name})";
+        allJars = (List<Map<String, Object>>) results.get(key);
+      }
+
+      tx.success();
+    }
+
+    return allJars;
+  }
+
+  private static Runnable searchForUserClasses(GraphDatabaseService graphDb, Map<String, Object> jar,
+                                               int jars, QueryResult results, String depth) {
+    return () -> {
+      try (Transaction tx = graphDb.beginTx()) {
+        Map<String, Object> params = new HashMap<>();
+        params.put("id", jar.get("id"));
+
+        String query = String.format(JAR_TO_USER_CLASS_QUERY, depth);
+        Result result = graphDb.execute(query, params);
+
+        while (result.hasNext()) {
+          Map<String, Object> resultMap = result.next();
+
+          String key = "collect(extract(n IN nodes(path) | {id: ID(n), name: n.name}))";
+          List<List<Map<String, Object>>> chains = (List<List<Map<String, Object>>>) resultMap.get(key);
+
+          if (chains.isEmpty()) {
+            continue;
+          }
+
+          List<List<Map<String, Object>>> filteredChains = filterChainResults(chains);
+
+          synchronized (results) {
+            results.addJarName((String) jar.get("name"));
+            filteredChains.forEach(results::addClassChain);
+          }
+        }
+
+        int counter = userClassCounter.incrementAndGet();
+        LOG.info("Completed {} out of {} search queries", counter, jars);
+        tx.success();
+      }
+    };
+  }
+
+  private static List<List<Map<String, Object>>> filterChainResults(List<List<Map<String, Object>>> chains) {
+    Set<String> matchedJars = new HashSet<>();
+
+    List<List<Map<String, Object>>> filteredChains = chains.stream().filter(c -> {
+      String jarName = (String) c.get(c.size() - 2).get("name");
+      if (matchedJars.contains(jarName)) {
+        return false;
+      } else {
+        matchedJars.add(jarName);
+        return true;
+      }
+    }).collect(Collectors.toList());
+
+    return filteredChains;
+  }
+
+  public static Collection<String> findOwningJarNames(GraphDatabaseService graphDb, long id) {
     Set<String> jarNames = new HashSet<>();
 
     try(Transaction tx = graphDb.beginTx()) {
       Map<String, Object> params = new HashMap<>();
-      params.put("name", className);
+      params.put("id", id);
 
       Result result = graphDb.execute(CLASS_TO_OWNING_JAR_QUERY, params);
 
@@ -106,7 +203,12 @@ public class QueryUtil {
       params.put("name", classNode.getName());
       params.put("custom", classNode.isCustom());
 
-      Result result = graphDb.execute(WRITE_CLASS_QUERY, params);
+      Result result;
+      if(classNode.isCustom()) {
+        result = graphDb.execute(WRITE_USER_CLASS_QUERY, params);
+      } else {
+        result = graphDb.execute(WRITE_CLASS_QUERY, params);
+      }
       while(result.hasNext()) {
         long id = (Long) result.next().get("ID(n)");
         classNode.setId(id);
@@ -136,7 +238,11 @@ public class QueryUtil {
       params.put("classID", classNode.getId());
       params.put("depID", dependency.getId());
 
-      graphDb.execute(CLASS_DEPCLASS_RELATIONSHIP_QUERY, params);
+      if(classNode.isCustom()) {
+        graphDb.execute(USER_CLASS_DEPCLASS_RELATIONSHIP_QUERY, params);
+      } else {
+        graphDb.execute(CLASS_DEPCLASS_RELATIONSHIP_QUERY, params);
+      }
       tx.success();
     } catch (QueryExecutionException qee) {
       LOG.warn("Class to dependency class relationship query failed", qee);
