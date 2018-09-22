@@ -16,7 +16,7 @@ public class StdOutReporter implements IReporter {
   private int chainCounter;
 
   @Override
-  public void preProcess(Collection<String> jars) {
+  public void preProcess(String searchTerm, Collection<String> jars) {
     builder.append("Search Results");
     builder.append(NEW_LINE);
     builder.append("Jars Matched");
@@ -30,6 +30,11 @@ public class StdOutReporter implements IReporter {
     builder.append(NEW_LINE);
     builder.append("Class Chains");
     builder.append(NEW_LINE);
+  }
+
+  @Override
+  public void endProcess() {
+
   }
 
   @Override

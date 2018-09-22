@@ -4,8 +4,7 @@ import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
 import com.jtmelton.tpl.domain.ClassNode;
 import com.jtmelton.tpl.domain.JarNode;
-import com.jtmelton.tpl.report.JsonReporter;
-import com.jtmelton.tpl.report.StdOutReporter;
+import com.jtmelton.tpl.report.IReporter;
 import com.jtmelton.tpl.results.QueryResult;
 import com.jtmelton.tpl.results.ResultsProcessor;
 import com.jtmelton.tpl.utils.JavassistUtil;
@@ -50,7 +49,11 @@ public class ThirdPartyLibraryAnalyzer {
 
   private final Collection<Path> jars = new ArrayList<>();
 
+  private Collection<IReporter> reporters = new ArrayList<>();
+
   private final int threads;
+
+  private final boolean singleThreadSearch;
 
   private GraphDatabaseService graphDb;
 
@@ -60,15 +63,16 @@ public class ThirdPartyLibraryAnalyzer {
 
   private ExecutorService executor;
 
-  private long startTime = System.nanoTime();
+  private long startTime;
 
   public ThirdPartyLibraryAnalyzer(String jarsDirectory, String classesDirectory,
-                                   String dbDirectory, int threads) {
+                                   String dbDirectory, int threads, boolean singleThreadSearch) {
     this.jarsDirectory = jarsDirectory;
     this.classesDirectory = classesDirectory;
     this.dbDirectory = dbDirectory;
     this.executor = Executors.newFixedThreadPool(threads);
     this.threads = threads;
+    this.singleThreadSearch = singleThreadSearch;
   }
 
   private void dbSetup() {
@@ -78,6 +82,8 @@ public class ThirdPartyLibraryAnalyzer {
   }
 
   public void buildDependencyGraph() throws IOException, InterruptedException {
+    startTime = System.nanoTime();
+
     dbSetup();
 
     Collection<Path> customClasses = findPathsByExt(new File(classesDirectory), ".class");
@@ -132,24 +138,29 @@ public class ThirdPartyLibraryAnalyzer {
             "and {} jars", customClassNames.size(), externalClassNodes.size(), jars.size());
   }
 
-  public void reportAffectedClasses(Collection<String> searchTerms, String depth, String outputFile) {
+  public void reportAffectedClasses(Collection<String> searchTerms, String depth,
+                                    String outputFile) throws InterruptedException {
+    startTime = System.nanoTime();
+
     if(graphDb == null) {
       dbSetup();
     }
 
     ResultsProcessor processor = new ResultsProcessor(graphDb);
-    processor.registerReporter(new JsonReporter());
-    processor.registerReporter(new StdOutReporter());
+    reporters.forEach(processor::registerReporter);
 
     for(String searchTerm : searchTerms) {
       LOG.info("Searching for classes affected by dependency {}", searchTerm);
 
-      QueryResult results = QueryUtil.findAffectedUserClasses(graphDb, searchTerm, depth);
+      QueryResult results = QueryUtil.findAffectedUserClasses(graphDb, searchTerm, depth, singleThreadSearch);
       LOG.info("Processing results for {} import chains", results.getClassChains().size());
       processor.process(results);
     }
 
     processor.generateReports(outputFile);
+
+    long elapsedTime = System.nanoTime() - startTime;
+    LOG.info("Report generation time {}", formatElapsedTime(elapsedTime));
   }
 
   private Runnable buildClassRelationships(ClassNode classNode) {
@@ -192,5 +203,9 @@ public class ThirdPartyLibraryAnalyzer {
     long sec = NANOSECONDS.toSeconds(nanoTime) - MINUTES.toSeconds(NANOSECONDS.toMinutes(nanoTime));
 
     return String.format("%02d hs, %02d min, %02d sec", hs, min, sec);
+  }
+
+  public void registerReporter(IReporter reporter) {
+    reporters.add(reporter);
   }
 }
