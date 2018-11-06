@@ -42,7 +42,7 @@ public class ResultsProcessor {
     for(List<Map<String, Object>> result : results.getClassChains()) {
       execChainEntryStart();
 
-      //Don't care about the last element which contains the matched jar
+      //Don't care about the first element which contains the matched jar
       for(int i = result.size() - 1;i > 0;i--) {
         String className = (String) result.get(i).get("name");
         long id = (Long) result.get(i).get("id");
