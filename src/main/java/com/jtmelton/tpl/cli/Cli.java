@@ -50,17 +50,38 @@ public class Cli {
 
   @Argument(value ="threads",
       description = "Number of threads to use for graph construction. Defaults to 5")
-  private static int threads = 5;
+  private static Integer threads = 5;
 
   @Argument(value ="singleThreadSearch",
       description = "Use only one thread for search. Helps on memory usage. Default is 2 threads")
   private static boolean searchThreads = false;
 
+  @Argument(value = "searchTimeout",
+      description = "Search Timeout in minutes before killing thread and lowering depth. Default is 60 min")
+  private static Integer searchTimeout = 60;
+
+  @Argument(value = "excludeTestDirs",
+      description = "Excludes test dirs from relationship analysis")
+  private static boolean excludeTestDirs = false;
+
+  @Argument(value = "depExclusions",
+      description = "Comma delimited regex for excluding jar dependencies from analysis")
+  private static String[] depExclusions = new String[]{};
+
   public static void main(String[] args) {
     new Cli().parseArgs(args);
 
-    ThirdPartyLibraryAnalyzer analyzer =
-            new ThirdPartyLibraryAnalyzer(jarsDirectory, classesDirectory, dbDirectory, threads, searchThreads);
+    Options options = new Options();
+    options.setJarsDirectory(jarsDirectory);
+    options.setClassesDirectory(classesDirectory);
+    options.setDbDirectory(dbDirectory);
+    options.setThreads(threads);
+    options.setSingleThreadSearch(searchThreads);
+    options.setSearchTimeout(searchTimeout);
+    options.setExcludeTestDirs(excludeTestDirs);
+    Arrays.asList(depExclusions).forEach(options::addDepExclusion);
+
+    ThirdPartyLibraryAnalyzer analyzer = new ThirdPartyLibraryAnalyzer(options);
 
     try {
       if(!searchOnly) {
