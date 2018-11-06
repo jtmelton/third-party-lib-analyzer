@@ -92,6 +92,10 @@ outputFile | Name of outputs | output | no
 searchOnly | Search existing DB without building/updating it | false | no
 threads | Number of threads to use for building DB | 5 | no
 singleThreadSearch | Use only 1 thread for searching | false | no
+searchTimeout | Time out in minutes before canceling search and lowering depth | 60 | no
+excludeTestDirs | Flag for excluding anything in a test directory when building DB | false | no
+depExclusions | Comma delimited list of regex used for excluding dependencies when building DB | empty | no
+
 
 ### Performance
 Database construction is fairly performant. Searches on the other hand will vary wildly depending on the size and structure of your application. So be mindful of the search depth setting and start conservatively. Increasing the search depth increases search time and memory usage exponentially.

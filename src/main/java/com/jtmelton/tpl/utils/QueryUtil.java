@@ -16,7 +16,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
-import static java.util.concurrent.TimeUnit.HOURS;
+import static java.util.concurrent.TimeUnit.MINUTES;
 
 public class QueryUtil {
 
@@ -67,22 +67,47 @@ public class QueryUtil {
 
   public static QueryResult findAffectedUserClasses(GraphDatabaseService graphDb,
                                                     String searchTerm,
-                                                    String depth, boolean singleThreadSearch) throws InterruptedException {
-    final QueryResult results = new QueryResult(searchTerm);
-    ExecutorService executor;
+                                                    String depth,
+                                                    boolean singleThreadSearch,
+                                                    int searchTimeout) throws InterruptedException {
+    String depthToUse = depth;
+    boolean completed = false;
+    QueryResult results = new QueryResult(searchTerm);;
+    boolean failed = false;
 
-    if(singleThreadSearch) {
-      executor = Executors.newFixedThreadPool(1);
-    } else {
-      executor = Executors.newFixedThreadPool(2);
+    while(!completed) {
+      results = new QueryResult(searchTerm);
+      ExecutorService executor;
+
+      if (singleThreadSearch) {
+        executor = Executors.newFixedThreadPool(1);
+      } else {
+        executor = Executors.newFixedThreadPool(2);
+      }
+
+      searchJarToClass(graphDb, results, depthToUse, searchTerm, executor);
+
+      executor.shutdown();
+      completed = executor.awaitTermination(searchTimeout, MINUTES);
+
+      if(!completed) {
+        if(depthToUse.equals("1")) {
+          failed = true;
+          break;
+        }
+
+        int newDepth = Integer.parseInt(depthToUse) - 1;
+        depthToUse = "" + newDepth;
+        LOG.warn("Search term {} at depth {} timed out, lowering depth to {}",
+                searchTerm, depthToUse + 1, depthToUse);
+      }
+
+      userClassCounter.set(0);
     }
 
-    searchJarToClass(graphDb, results, depth, searchTerm, executor);
-
-    executor.shutdown();
-    executor.awaitTermination(24, HOURS);
-
-    userClassCounter.set(0);
+    if(failed) {
+      LOG.warn("Search for term {} failed", searchTerm);
+    }
 
     return results;
   }
@@ -117,7 +142,7 @@ public class QueryUtil {
         String query = String.format(JAR_TO_USER_CLASS_QUERY, depth);
         Result result = graphDb.execute(query, params);
 
-        while (result.hasNext()) {
+        while (result != null && result.hasNext()) {
           Map<String, Object> resultMap = result.next();
 
           String key = "collect(extract(n IN nodes(path) | {id: ID(n), name: n.name}))";
@@ -128,6 +153,7 @@ public class QueryUtil {
           }
 
           List<List<Map<String, Object>>> filteredChains = filterChainResults(chains);
+          result = null;
 
           synchronized (results) {
             results.addJarName((String) jar.get("name"));
@@ -143,14 +169,14 @@ public class QueryUtil {
   }
 
   private static List<List<Map<String, Object>>> filterChainResults(List<List<Map<String, Object>>> chains) {
-    Set<String> matchedJars = new HashSet<>();
+    Set<String> matchedUserClasses = new HashSet<>();
 
     List<List<Map<String, Object>>> filteredChains = chains.stream().filter(c -> {
-      String jarName = (String) c.get(c.size() - 2).get("name");
-      if (matchedJars.contains(jarName)) {
+      String jarName = (String) c.get(c.size() - 1).get("name");
+      if (matchedUserClasses.contains(jarName)) {
         return false;
       } else {
-        matchedJars.add(jarName);
+        matchedUserClasses.add(jarName);
         return true;
       }
     }).collect(Collectors.toList());

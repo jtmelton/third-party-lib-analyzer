@@ -2,6 +2,7 @@ package com.jtmelton.tpl;
 
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
+import com.jtmelton.tpl.cli.Options;
 import com.jtmelton.tpl.domain.ClassNode;
 import com.jtmelton.tpl.domain.JarNode;
 import com.jtmelton.tpl.report.IReporter;
@@ -22,6 +23,9 @@ import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static java.util.concurrent.TimeUnit.HOURS;
@@ -55,6 +59,12 @@ public class ThirdPartyLibraryAnalyzer {
 
   private final boolean singleThreadSearch;
 
+  private final int searchTimeout;
+
+  private final Collection<String> depExclusions;
+
+  private final boolean excludeTestDirs;
+
   private GraphDatabaseService graphDb;
 
   private AtomicInteger classesProcessed = new AtomicInteger();
@@ -65,14 +75,16 @@ public class ThirdPartyLibraryAnalyzer {
 
   private long startTime;
 
-  public ThirdPartyLibraryAnalyzer(String jarsDirectory, String classesDirectory,
-                                   String dbDirectory, int threads, boolean singleThreadSearch) {
-    this.jarsDirectory = jarsDirectory;
-    this.classesDirectory = classesDirectory;
-    this.dbDirectory = dbDirectory;
+  public ThirdPartyLibraryAnalyzer(Options options) {
+    this.jarsDirectory = options.getJarsDirectory();
+    this.classesDirectory = options.getClassesDirectory();
+    this.dbDirectory = options.getDbDirectory();
+    this.threads = options.getThreads();
     this.executor = Executors.newFixedThreadPool(threads);
-    this.threads = threads;
-    this.singleThreadSearch = singleThreadSearch;
+    this.singleThreadSearch = options.isSingleThreadSearch();
+    this.searchTimeout = options.getSearchTimeout();
+    this.depExclusions = options.getDepExclusions();
+    this.excludeTestDirs = options.isExcludeTestDirs();
   }
 
   private void dbSetup() {
@@ -86,7 +98,7 @@ public class ThirdPartyLibraryAnalyzer {
 
     dbSetup();
 
-    Collection<Path> customClasses = findPathsByExt(new File(classesDirectory), ".class");
+    Collection<Path> customClasses = findPathsByExt(new File(classesDirectory), ".class", filterTestDirs());
 
     LOG.info("Built class file paths, will process {} paths", customClasses.size());
     customClassNames.addAll(JavassistUtil.collectClassFiles(customClasses));
@@ -94,7 +106,7 @@ public class ThirdPartyLibraryAnalyzer {
     LOG.info("Analyzing {} class files", customClassNames.size());
     Collection<ClassNode> classNodes = JavassistUtil.analyzeClassFiles(customClasses, customClassNames, classToUsedClassesMap);
 
-    jars.addAll(findPathsByExt(new File(jarsDirectory), ".jar"));
+    jars.addAll(findPathsByExt(new File(jarsDirectory), ".jar", depExclude()));
 
     LOG.info("Analyzing {} jar files", jars.size());
     Collection<JarNode> jarNodes = JavassistUtil.analyzeJarFiles(jars, externalClassNodes, classToUsedClassesMap);
@@ -152,7 +164,7 @@ public class ThirdPartyLibraryAnalyzer {
     for(String searchTerm : searchTerms) {
       LOG.info("Searching for classes affected by dependency {}", searchTerm);
 
-      QueryResult results = QueryUtil.findAffectedUserClasses(graphDb, searchTerm, depth, singleThreadSearch);
+      QueryResult results = QueryUtil.findAffectedUserClasses(graphDb, searchTerm, depth, singleThreadSearch, searchTimeout);
       LOG.info("Processing results for {} import chains", results.getClassChains().size());
       processor.process(results);
     }
@@ -189,12 +201,44 @@ public class ThirdPartyLibraryAnalyzer {
     };
   }
 
-  private Collection<Path> findPathsByExt(File dir, String ext) throws IOException {
+  private Collection<Path> findPathsByExt(File dir, String ext, Predicate<Path> filter) throws IOException {
     Collection<Path> paths = Files.walk(Paths.get(dir.getAbsolutePath()))
             .filter(p -> p.toAbsolutePath().toFile().getAbsolutePath().endsWith(ext))
+            .filter(filter)
             .collect(Collectors.toList());
 
     return paths;
+  }
+
+  private Predicate<Path> depExclude() {
+    return p -> {
+      for(String exclusion : depExclusions) {
+        Pattern pattern = Pattern.compile(exclusion);
+        Matcher matcher = pattern.matcher(p.toString());
+
+        if(matcher.matches()) {
+          return false;
+        }
+      }
+
+      return true;
+    };
+  }
+
+  private Predicate<Path> filterTestDirs() {
+    return p -> {
+      if(!excludeTestDirs) {
+        return true;
+      }
+
+      String path = p.toAbsolutePath().toFile().getAbsolutePath();
+      if(path.contains("/")) {
+        return !path.contains("/test/");
+      } else if(path.contains("\\\\")) {
+        return !path.contains("\\\\test\\\\");
+      }
+      return true;
+    };
   }
 
   private String formatElapsedTime(long nanoTime) {
