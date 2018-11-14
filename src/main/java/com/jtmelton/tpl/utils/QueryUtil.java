@@ -3,19 +3,20 @@ package com.jtmelton.tpl.utils;
 import com.jtmelton.tpl.results.QueryResult;
 import com.jtmelton.tpl.domain.ClassNode;
 import com.jtmelton.tpl.domain.JarNode;
-import org.neo4j.graphdb.GraphDatabaseService;
-import org.neo4j.graphdb.QueryExecutionException;
-import org.neo4j.graphdb.Result;
-import org.neo4j.graphdb.Transaction;
+import org.neo4j.graphdb.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
+import static java.util.concurrent.TimeUnit.HOURS;
 import static java.util.concurrent.TimeUnit.MINUTES;
 
 public class QueryUtil {
@@ -47,9 +48,10 @@ public class QueryUtil {
 
   private static final AtomicInteger userClassCounter = new AtomicInteger();
 
-  public static void searchJarToClass(GraphDatabaseService graphDb, QueryResult results, String depth,
-                                      String searchTerm, ExecutorService executor) {
+  private static final AtomicInteger jarSearchesCounter = new AtomicInteger();
 
+  public static void searchJarToClass(GraphDatabaseService graphDb, QueryResult results, String depth,
+                                      String searchTerm, ExecutorService executor, int timeout) {
     List<Map<String, Object>> allJars = getAllJars(graphDb);
 
     final List<Map<String, Object>> jars = new ArrayList<>();
@@ -59,8 +61,23 @@ public class QueryUtil {
     LOG.info("Retrieved {} jar nodes", jars.size());
 
     if(!jars.isEmpty()) {
+      Set<String> uniqueJars = new HashSet<>();
       for(Map<String, Object> jar : jars) {
-        executor.submit(searchForUserClasses(graphDb, jar, jars.size(), results, depth));
+        String absoluteJarName = (String) jar.get("name");
+        Path jarPath = Paths.get(absoluteJarName, "");
+        String jarName = jarPath.getFileName().toString();
+
+        // TODO: Switch to storing hashes of jars in DB for identifying duplicate
+        if(uniqueJars.contains(jarName)) {
+          results.addJarName(absoluteJarName);
+          LOG.info("Ignoring duplicate jar {}", absoluteJarName);
+          continue;
+        }
+
+        uniqueJars.add(jarName);
+
+        jarSearchesCounter.incrementAndGet();
+        executor.submit(searchForUserClasses(graphDb, jar, results, depth, timeout));
       }
     }
   }
@@ -70,44 +87,22 @@ public class QueryUtil {
                                                     String depth,
                                                     boolean singleThreadSearch,
                                                     int searchTimeout) throws InterruptedException {
-    String depthToUse = depth;
-    boolean completed = false;
-    QueryResult results = new QueryResult(searchTerm);;
-    boolean failed = false;
+    QueryResult results = new QueryResult(searchTerm);
+    ExecutorService executor;
 
-    while(!completed) {
-      results = new QueryResult(searchTerm);
-      ExecutorService executor;
-
-      if (singleThreadSearch) {
-        executor = Executors.newFixedThreadPool(1);
-      } else {
-        executor = Executors.newFixedThreadPool(2);
-      }
-
-      searchJarToClass(graphDb, results, depthToUse, searchTerm, executor);
-
-      executor.shutdown();
-      completed = executor.awaitTermination(searchTimeout, MINUTES);
-
-      if(!completed) {
-        if(depthToUse.equals("1")) {
-          failed = true;
-          break;
-        }
-
-        int newDepth = Integer.parseInt(depthToUse) - 1;
-        depthToUse = "" + newDepth;
-        LOG.warn("Search term {} at depth {} timed out, lowering depth to {}",
-                searchTerm, depthToUse + 1, depthToUse);
-      }
-
-      userClassCounter.set(0);
+    if (singleThreadSearch) {
+      executor = Executors.newFixedThreadPool(1);
+    } else {
+      executor = Executors.newFixedThreadPool(2);
     }
 
-    if(failed) {
-      LOG.warn("Search for term {} failed", searchTerm);
-    }
+    searchJarToClass(graphDb, results, depth, searchTerm, executor, searchTimeout);
+
+    executor.shutdown();
+    executor.awaitTermination(24, HOURS);
+
+    userClassCounter.set(0);
+    jarSearchesCounter.set(0);
 
     return results;
   }
@@ -132,39 +127,60 @@ public class QueryUtil {
     return allJars;
   }
 
-  private static Runnable searchForUserClasses(GraphDatabaseService graphDb, Map<String, Object> jar,
-                                               int jars, QueryResult results, String depth) {
+  private static Callable<Boolean> searchForUserClasses(GraphDatabaseService graphDb, Map<String, Object> jar,
+                                                        QueryResult results, String depth, int timeout) {
     return () -> {
-      try (Transaction tx = graphDb.beginTx()) {
-        Map<String, Object> params = new HashMap<>();
-        params.put("id", jar.get("id"));
+      boolean success = false;
+      String depthToUse = depth;
 
-        String query = String.format(JAR_TO_USER_CLASS_QUERY, depth);
-        Result result = graphDb.execute(query, params);
+      while(!success) {
+        try (Transaction tx = graphDb.beginTx(timeout, MINUTES)) {
+          Map<String, Object> params = new HashMap<>();
+          params.put("id", jar.get("id"));
 
-        while (result != null && result.hasNext()) {
-          Map<String, Object> resultMap = result.next();
+          String query = String.format(JAR_TO_USER_CLASS_QUERY, depthToUse);
+          Result result = graphDb.execute(query, params);
 
-          String key = "collect(extract(n IN nodes(path) | {id: ID(n), name: n.name}))";
-          List<List<Map<String, Object>>> chains = (List<List<Map<String, Object>>>) resultMap.get(key);
+          while (result != null && result.hasNext()) {
+            Map<String, Object> resultMap = result.next();
 
-          if (chains.isEmpty()) {
-            continue;
+            String key = "collect(extract(n IN nodes(path) | {id: ID(n), name: n.name}))";
+            List<List<Map<String, Object>>> chains = (List<List<Map<String, Object>>>) resultMap.get(key);
+
+            if (chains.isEmpty()) {
+              continue;
+            }
+
+            List<List<Map<String, Object>>> filteredChains = filterChainResults(chains);
+            result = null;
+
+            synchronized (results) {
+              results.addJarName((String) jar.get("name"));
+              filteredChains.forEach(results::addClassChain);
+            }
           }
 
-          List<List<Map<String, Object>>> filteredChains = filterChainResults(chains);
-          result = null;
-
-          synchronized (results) {
-            results.addJarName((String) jar.get("name"));
-            filteredChains.forEach(results::addClassChain);
+          int counter = userClassCounter.incrementAndGet();
+          LOG.info("Completed {} out of {} search queries", counter, jarSearchesCounter.get());
+          tx.success();
+        } catch (TransactionTerminatedException tte) {
+          if(depthToUse.equals("1")) {
+            LOG.warn("Search failed for {}", jar.get("name"));
+            break;
           }
+
+          int newDepth = Integer.parseInt(depthToUse) - 1;
+          depthToUse = "" + newDepth;
+          LOG.warn("Search at depth {} timed out, lowering depth to {} for {}",
+                  Integer.parseInt(depthToUse) + 1, depthToUse, jar.get("name"));
+
+          continue;
         }
 
-        int counter = userClassCounter.incrementAndGet();
-        LOG.info("Completed {} out of {} search queries", counter, jars);
-        tx.success();
+        success = true;
       }
+
+      return success;
     };
   }
 
