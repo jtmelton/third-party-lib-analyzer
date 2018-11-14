@@ -68,6 +68,10 @@ public class Cli {
       description = "Comma delimited regex for excluding jar dependencies from analysis")
   private static String[] depExclusions = new String[]{};
 
+  @Argument(value = "stdoutReporter",
+      description = "Enable stdout reporter. Has memory impact if you searches eat up a lot of memory")
+  private static boolean stdoutReporter = false;
+
   public static void main(String[] args) {
     new Cli().parseArgs(args);
 
@@ -96,7 +100,9 @@ public class Cli {
           LOG.warn("Failed to register reporters", ioe);
         }
 
-        analyzer.registerReporter(new StdOutReporter());
+        if(stdoutReporter) {
+          analyzer.registerReporter(new StdOutReporter());
+        }
 
         Collection<String> jarNamesList = Arrays.asList(jarNames);
         analyzer.reportAffectedClasses(jarNamesList, searchDepth, outputFile);
