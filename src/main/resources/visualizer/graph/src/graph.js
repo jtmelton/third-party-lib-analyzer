@@ -247,11 +247,12 @@ function mouseMovement() {
 }
 
 function mouseWheel(event) {
+    let oldScale = scaleFactor
     scaleFactor -= event.delta * 0.0005;
 
     if(scaleFactor > 0) {
-        translateX += event.delta * ((mouseX - translateX) / scaleFactor) * 0.0005;
-        translateY += event.delta * ((mouseY - translateY) / scaleFactor) * 0.0005;
+        translateX += event.delta * ((mouseX - translateX) / oldScale) * 0.0005;
+        translateY += event.delta * ((mouseY - translateY) / oldScale) * 0.0005;
     } else {
         scaleFactor = 0;
     }
