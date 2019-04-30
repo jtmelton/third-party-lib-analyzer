@@ -26,7 +26,7 @@ public class VisualizationReporter implements IReporter {
 
   private Map<String, Object> previous = null;
 
-  private final File outputDir;
+  private final File dir;
 
   private final File graphSrcDir;
 
@@ -42,17 +42,17 @@ public class VisualizationReporter implements IReporter {
           "    padding: 16px;" +
           "}";
 
-  public VisualizationReporter(String outputFile) throws IOException {
-    outputDir = new File("visualization");
-    outputDir.mkdir();
+  public VisualizationReporter(String outputDir) throws IOException {
+    dir = Paths.get(outputDir, "visualization").toFile();
+    dir.mkdir();
 
-    graphSrcDir = Paths.get(outputDir.getAbsolutePath(), "graph/src").toFile();
+    graphSrcDir = Paths.get(dir.getAbsolutePath(), "graph/src").toFile();
     graphSrcDir.mkdirs();
 
-    graphVendorDir = Paths.get(outputDir.getAbsolutePath(), "graph/vendor").toFile();
+    graphVendorDir = Paths.get(dir.getAbsolutePath(), "graph/vendor").toFile();
     graphVendorDir.mkdirs();
 
-    File indexFile = Paths.get(outputDir.getAbsolutePath(), "index.html").toFile();
+    File indexFile = Paths.get(dir.getAbsolutePath(), "index.html").toFile();
     htmlWriter = new BufferedWriter(new FileWriter(indexFile));
 
     htmlWriter.write("<html>");
@@ -70,7 +70,7 @@ public class VisualizationReporter implements IReporter {
 
   @Override
   public void preProcess(String searchTerm, Collection<String> jars) throws IOException{
-    Path outputPath = Paths.get(outputDir.getAbsolutePath(), searchTerm);
+    Path outputPath = Paths.get(dir.getAbsolutePath(), searchTerm);
     File outputFile = outputPath.toFile();
     outputFile.mkdir();
 

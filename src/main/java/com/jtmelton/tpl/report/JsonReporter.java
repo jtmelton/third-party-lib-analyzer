@@ -11,9 +11,13 @@ public class JsonReporter implements IReporter {
 
   private JsonWriter writer;
 
-  public JsonReporter(String outputFile) throws IOException {
-    Path outputPath = Paths.get(outputFile + ".json");
-    FileWriter fw = new FileWriter(outputPath.toFile());
+  public JsonReporter(String outputDir) throws IOException {
+    File dir = new File(outputDir);
+    dir.mkdirs();
+
+    Path jsonOutput = Paths.get(outputDir, "tplaReport.json");
+    jsonOutput.toFile().createNewFile();
+    FileWriter fw = new FileWriter(jsonOutput.toFile());
 
     writer = new JsonWriter(fw);
     writer.setIndent("  ");

@@ -40,9 +40,9 @@ public class Cli {
       description = "How deep to search graph DB for Jar->user class. Defaults to 5")
   private static String searchDepth = "5";
 
-  @Argument(value = "outputFile",
-      description = "File containing output with dependency relationships")
-  private static String outputFile = "output";
+  @Argument(value = "outputDir",
+      description = "Dir to write dependency relationships report to")
+  private static String outputDir = "output";
 
   @Argument(value = "searchOnly",
       description = "Search existing DB without building/updating it")
@@ -94,8 +94,8 @@ public class Cli {
 
       if(jarNames != null) {
         try {
-          analyzer.registerReporter(new JsonReporter(outputFile));
-          analyzer.registerReporter(new VisualizationReporter(outputFile));
+          analyzer.registerReporter(new JsonReporter(outputDir));
+          analyzer.registerReporter(new VisualizationReporter(outputDir));
         } catch(IOException ioe) {
           LOG.warn("Failed to register reporters", ioe);
         }
@@ -105,7 +105,7 @@ public class Cli {
         }
 
         Collection<String> jarNamesList = Arrays.asList(jarNames);
-        analyzer.reportAffectedClasses(jarNamesList, searchDepth, outputFile);
+        analyzer.reportAffectedClasses(jarNamesList, searchDepth, outputDir);
       }
 
       if(jarNames == null && searchOnly) {
