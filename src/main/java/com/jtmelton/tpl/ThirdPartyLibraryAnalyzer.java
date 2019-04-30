@@ -151,7 +151,7 @@ public class ThirdPartyLibraryAnalyzer {
   }
 
   public void reportAffectedClasses(Collection<String> searchTerms, String depth,
-                                    String outputFile) throws InterruptedException {
+                                    String outputDir) throws InterruptedException {
     startTime = System.nanoTime();
 
     if(graphDb == null) {
@@ -169,7 +169,7 @@ public class ThirdPartyLibraryAnalyzer {
       processor.process(results);
     }
 
-    processor.generateReports(outputFile);
+    processor.generateReports(outputDir);
 
     long elapsedTime = System.nanoTime() - startTime;
     LOG.info("Report generation time {}", formatElapsedTime(elapsedTime));

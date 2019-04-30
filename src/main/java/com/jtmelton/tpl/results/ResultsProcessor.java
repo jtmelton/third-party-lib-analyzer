@@ -26,10 +26,10 @@ public class ResultsProcessor {
     reporters.add(reporter);
   }
 
-  public void generateReports(String outputFile) {
+  public void generateReports(String outputDir) {
     reporters.forEach(reporter -> {
       try {
-        reporter.report(outputFile);
+        reporter.report(outputDir);
       } catch (IOException e) {
         LOG.warn("Reporter {} failed", reporter.getClass().toString(), e);
       }

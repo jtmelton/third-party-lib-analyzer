@@ -88,7 +88,7 @@ classesDirectory | Directory containing compiled classes | N/A | yes
 dbDirectory | Directory where database will be written to | N/A | yes
 jarNames | Comma delimited list of jars to search for | N/A | no
 searchDepth | How deep a ralationship chain to search | 5 | no
-outputFile | Name of outputs | output | no
+outputDir | Directory to write reports to | output | no
 searchOnly | Search existing DB without building/updating it | false | no
 threads | Number of threads to use for building DB | 5 | no
 singleThreadSearch | Use only 1 thread for searching | false | no
