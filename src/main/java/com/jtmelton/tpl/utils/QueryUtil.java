@@ -44,7 +44,14 @@ public class QueryUtil {
   private static final String GET_ALL_JARS_QUERY = "MATCH (jar:Jar) RETURN collect({id: ID(jar), name: jar.name})";
 
   private static final String JAR_TO_USER_CLASS_QUERY = "MATCH (jar:Jar) WHERE ID(jar) = { `id` } WITH jar " +
-          "MATCH path = ((jar)<-[:classes]-(:Class)<-[:classesDependedOn*..%s]-(:UserClass)) RETURN collect(extract(n IN nodes(path) | {id: ID(n), name: n.name}))";
+          "MATCH path = ((jar)<-[:classes]-(:Class)<-[:classesDependedOn*..%s]-(:UserClass)) " +
+          "RETURN collect(extract(n IN nodes(path) | {id: ID(n), name: n.name}))";
+
+  private static final String JAR_CLASS_QUERY = "MATCH (jar:Jar) WHERE ID(jar) = { `id` } WITH jar " +
+          "MATCH (jar)<-[:classes]-(jarClass:Class) RETURN collect({id: ID(jarClass)})";
+
+  private static final String CLASS_TO_USER_QUERY = "MATCH (jarClass:Class) WHERE ID(jarClass) = { `id` } WITH jarClass " +
+          "MATCH (jarClass)<-[:classesDependedOn*..12]-(userClass:UserClass) RETURN userClass LIMIT 1";
 
   private static final AtomicInteger userClassCounter = new AtomicInteger();
 
@@ -107,7 +114,47 @@ public class QueryUtil {
     return results;
   }
 
-  private static List<Map<String, Object>> getAllJars(GraphDatabaseService graphDb) {
+  public static List<Long> getJarClassIds(long id, GraphDatabaseService graphDb) {
+    List<Long> classIds = new ArrayList<>();
+
+    try(Transaction tx = graphDb.beginTx()) {
+      Map<String, Object> params = new HashMap<>();
+      params.put("id", id);
+
+      Result query = graphDb.execute(JAR_CLASS_QUERY, params);
+      while (query.hasNext()) {
+        Map<String, Object> results = query.next();
+
+        String key = "collect({id: ID(jarClass)})";
+        List<Map<Object, Object>> classes = (List<Map<Object, Object>>) results.get(key);
+        for(Map<Object, Object> clazz : classes) {
+          long classId = (long) clazz.get("id");
+          classIds.add(classId);
+        }
+      }
+
+      tx.success();
+    }
+
+    return classIds;
+  }
+
+  public static boolean isClassUsedByUser(long id, GraphDatabaseService graphDb, long timeout) {
+    boolean result;
+    try(Transaction tx = graphDb.beginTx(timeout, MINUTES)) {
+      Map<String, Object> params = new HashMap<>();
+      params.put("id", id);
+
+      Result query = graphDb.execute(CLASS_TO_USER_QUERY, params);
+      result = query.hasNext();
+
+      tx.success();
+    }
+
+    return result;
+  }
+
+  public static List<Map<String, Object>> getAllJars(GraphDatabaseService graphDb) {
     List<Map<String, Object>> allJars = new ArrayList<>();
 
     try(Transaction tx = graphDb.beginTx()) {

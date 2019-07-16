@@ -22,6 +22,10 @@ public class Options {
 
   private Collection<String> depExclusions = new ArrayList<>();
 
+  private Collection<String> unusedJarExclusions = new ArrayList<>();
+
+  private Collection<String> unusedJarInclusions = new ArrayList<>();
+
   public boolean isSingleThreadSearch() {
     return singleThreadSearch;
   }
@@ -82,7 +86,23 @@ public class Options {
     depExclusions.add(exclusion);
   }
 
+  public void addUnusedJarExclusion(String exclusion) {
+    unusedJarExclusions.add(exclusion);
+  }
+
+  public void addUnusedJarInclusion(String inclusion) {
+    unusedJarInclusions.add(inclusion);
+  }
+
   public Collection<String> getDepExclusions() {
     return Collections.unmodifiableCollection(depExclusions);
+  }
+
+  public Collection<String> getUnusedJarExclusions() {
+    return Collections.unmodifiableCollection(unusedJarExclusions);
+  }
+
+  public Collection<String> getUnusedJarInclusions() {
+    return Collections.unmodifiableCollection(unusedJarInclusions);
   }
 }

@@ -80,6 +80,9 @@ TPLA contains a built in visualizer. It will emit a visualization folder contain
 ![Visualizer](visScreenShot.png)
 Top left is a list of jars present which are paginated. Top right lists stats. The view can be translated and zoomed. Indivdual nodes can be selected to highlight their connections. Selecting a node will highlight what jar it belongs to in the top left. Clicking on a colored square in the top left will translate view to that cluster of classes.
 
+### Unused Jars Search
+When using the -searchUnusedOnly argument, a query is run to determine what jars in the database are not referenced by a user class. The accuracy of the results will be based on the specified depth of the search. Like in the usage search, the higher the depth, the longer the query will take to complete. This search produces a text file in your output directory.
+
 ### Arguments
 Arg | Description | Default | Required
 ------------- | ------------- | --- | ---
@@ -95,6 +98,9 @@ singleThreadSearch | Use only 1 thread for searching | false | no
 searchTimeout | Time out in minutes before canceling search and lowering depth | 60 | no
 excludeTestDirs | Flag for excluding anything in a test directory when building DB | false | no
 depExclusions | Comma delimited list of regex used for excluding dependencies when building DB | empty | no
+searchUnusedOnly | Search for unused jars. Cannot be used in conjunction with searchOnly | false | no
+unusedJarExclusions | Comma delimited regex for excluding jars from unused jar search. Filters after inclusions | empty | no
+unusedJarInclusions | Comma delimited regex for specifying which jars to include in unused search. Filter before exclusions | empty | no
 
 
 ### Performance

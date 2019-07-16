@@ -48,6 +48,20 @@ public class Cli {
       description = "Search existing DB without building/updating it")
   private static boolean searchOnly = false;
 
+  @Argument(value = "searchUnusedOnly",
+      description = "Search for jars that are not potentially unused")
+  private static boolean searchUnusedOnly = false;
+
+  @Argument(value = "unusedJarExclusions",
+      description = "Comma delimited regex for excluding jars from unused jar search. " +
+              "Inclusions filter first, then exclusions filter the returned subset")
+  private static String[] unusedJarExclusions = new String[]{};
+
+  @Argument(value = "unusedJarInclusions",
+      description = "Comma delimited regex for which specific jars should be checked in unused jar search. " +
+              "Inclusions filter first, then exclusions filter the returned subset")
+  private static String[] unusedJarInclusions = new String[]{};
+
   @Argument(value ="threads",
       description = "Number of threads to use for graph construction. Defaults to 5")
   private static Integer threads = 5;
@@ -75,6 +89,12 @@ public class Cli {
   public static void main(String[] args) {
     new Cli().parseArgs(args);
 
+    if(searchOnly && searchUnusedOnly) {
+      LOG.error("Only one type of search is allowed at a time. " +
+              "Either use -searchOnly or -searchUnusedOnly.");
+      return;
+    }
+
     Options options = new Options();
     options.setJarsDirectory(jarsDirectory);
     options.setClassesDirectory(classesDirectory);
@@ -84,15 +104,17 @@ public class Cli {
     options.setSearchTimeout(searchTimeout);
     options.setExcludeTestDirs(excludeTestDirs);
     Arrays.asList(depExclusions).forEach(options::addDepExclusion);
+    Arrays.asList(unusedJarExclusions).forEach(options::addUnusedJarExclusion);
+    Arrays.asList(unusedJarInclusions).forEach(options::addUnusedJarInclusion);
 
     ThirdPartyLibraryAnalyzer analyzer = new ThirdPartyLibraryAnalyzer(options);
 
     try {
-      if(!searchOnly) {
+      if(!searchOnly && !searchUnusedOnly) {
         analyzer.buildDependencyGraph();
       }
 
-      if(jarNames != null) {
+      if(jarNames != null && searchOnly) {
         try {
           analyzer.registerReporter(new JsonReporter(outputDir));
           analyzer.registerReporter(new VisualizationReporter(outputDir));
@@ -111,6 +133,10 @@ public class Cli {
       if(jarNames == null && searchOnly) {
         LOG.warn("Missing arg -jarNames");
       }
+
+      if(searchUnusedOnly) {
+        analyzer.reportUnusedJars(outputDir);
+      }
     } catch(InterruptedException ie) {
       LOG.error("Process interrupted while waiting for threads to complete", ie);
     } catch (IOException ioe) {
@@ -121,5 +147,4 @@ public class Cli {
   private void parseArgs(String[] args) {
     Args.parse(this, args);
   }
-
 }

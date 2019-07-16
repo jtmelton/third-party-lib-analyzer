@@ -15,8 +15,7 @@ import org.neo4j.graphdb.factory.GraphDatabaseFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -63,6 +62,10 @@ public class ThirdPartyLibraryAnalyzer {
 
   private final Collection<String> depExclusions;
 
+  private final Collection<String> unusedJarExclusions;
+
+  private final Collection<String> unusedJarInclusions;
+
   private final boolean excludeTestDirs;
 
   private GraphDatabaseService graphDb;
@@ -85,6 +88,8 @@ public class ThirdPartyLibraryAnalyzer {
     this.searchTimeout = options.getSearchTimeout();
     this.depExclusions = options.getDepExclusions();
     this.excludeTestDirs = options.isExcludeTestDirs();
+    this.unusedJarExclusions = options.getUnusedJarExclusions();
+    this.unusedJarInclusions = options.getUnusedJarInclusions();
   }
 
   private void dbSetup() {
@@ -121,10 +126,10 @@ public class ThirdPartyLibraryAnalyzer {
     LOG.info("Writing jars and jar class relationships to db");
     jarNodes.forEach(j -> executor.submit(() -> {
       QueryUtil.writeJarNode(graphDb, j);
-      jarsProcessed.incrementAndGet();
+      int processed = jarsProcessed.incrementAndGet();
       j.getClassNodes().forEach(c -> QueryUtil.writeClassToJarRel(graphDb, j, c));
       LOG.info("Written {} of {} jars and jar relationships to db",
-              jarsProcessed.get(), jarNodes.size());
+              processed, jarNodes.size());
     }));
 
     // Wait for all current threads to complete then spin up new thread pool.
@@ -150,14 +155,54 @@ public class ThirdPartyLibraryAnalyzer {
             "and {} jars", customClassNames.size(), externalClassNodes.size(), jars.size());
   }
 
-  public void reportAffectedClasses(Collection<String> searchTerms, String depth,
-                                    String outputDir) throws InterruptedException {
-    startTime = System.nanoTime();
-
+  public void reportUnusedJars(String outputDir) throws InterruptedException {
     if(graphDb == null) {
       dbSetup();
     }
 
+    List<Map<String, Object>> jars = QueryUtil.getAllJars(graphDb);
+
+    List<Map<String, Object>> filteredJars = jars.stream()
+            .filter(unusedJarInclude())
+            .filter(unusedJarExclude())
+            .collect(Collectors.toList());
+
+    Collection<String> unusedJars = new ArrayList<>();
+
+    AtomicInteger i = new AtomicInteger();
+    i.set(0);
+
+    Set<String> processed = new HashSet<>();
+
+    for(Map<String, Object> entry : filteredJars) {
+      String name = (String) entry.get("name");
+
+      if(!processed.contains(name)) {
+        processed.add(name);
+        executor.submit(searchIfJarIsUsed(entry, unusedJars, i, filteredJars.size()));
+      } else if(processed.contains(name)) {
+        i.incrementAndGet();
+      }
+    }
+
+    executor.shutdown();
+    executor.awaitTermination(24, HOURS);
+
+    LOG.info("Writing results");
+
+    File outputDirFile = new File(outputDir);
+    outputDirFile.mkdirs();
+
+    File output = Paths.get(outputDir, "unusedJars.txt").toFile();
+    try(PrintWriter writer = new PrintWriter(output)) {
+      unusedJars.forEach(writer::println);
+    } catch(FileNotFoundException fnfe) {
+      LOG.error("Failed to write results to file.", fnfe);
+    }
+  }
+
+  public void reportAffectedClasses(Collection<String> searchTerms, String depth,
+                                    String outputDir) throws InterruptedException {
     ResultsProcessor processor = new ResultsProcessor(graphDb);
     reporters.forEach(processor::registerReporter);
 
@@ -173,6 +218,32 @@ public class ThirdPartyLibraryAnalyzer {
 
     long elapsedTime = System.nanoTime() - startTime;
     LOG.info("Report generation time {}", formatElapsedTime(elapsedTime));
+  }
+
+  private Runnable searchIfJarIsUsed(Map<String, Object> entry, Collection<String> results,
+                                     AtomicInteger i, int size) {
+    return () -> {
+      String name = (String) entry.get("name");
+
+      LOG.info("Jar {} of {}: {}", i.incrementAndGet(), size, name);
+
+      List<Long> ids = QueryUtil.getJarClassIds((Long) entry.get("id"), graphDb);
+
+      boolean result = false;
+      for(long id : ids) {
+        result = QueryUtil.isClassUsedByUser(id, graphDb, searchTimeout);
+
+        if(result) {
+          break;
+        }
+      }
+
+      if(!result) {
+        synchronized (results) {
+          results.add(name);
+        }
+      }
+    };
   }
 
   private Runnable buildClassRelationships(ClassNode classNode) {
@@ -195,9 +266,9 @@ public class ThirdPartyLibraryAnalyzer {
   private Runnable writeClassNode(ClassNode classNode) {
     return () -> {
       QueryUtil.writeClassNode(graphDb, classNode);
-      classesProcessed.incrementAndGet();
+      int processed = classesProcessed.incrementAndGet();
       LOG.info("Written {} of {} classes to db",
-              classesProcessed.get(), externalClassNodes.size());
+              processed, externalClassNodes.size());
     };
   }
 
@@ -217,6 +288,32 @@ public class ThirdPartyLibraryAnalyzer {
         Matcher matcher = pattern.matcher(p.toString());
 
         if(matcher.matches()) {
+          return false;
+        }
+      }
+
+      return true;
+    };
+  }
+
+  private Predicate<Map<String, Object>> unusedJarInclude() {
+    return j -> {
+      String name = (String) j.get("name");
+      for(String regex : unusedJarInclusions) {
+        if(name.matches(regex)) {
+          return true;
+        }
+      }
+
+      return false;
+    };
+  }
+
+  private Predicate<Map<String, Object>> unusedJarExclude() {
+    return j -> {
+      String name = (String) j.get("name");
+      for(String regex : unusedJarExclusions) {
+        if(name.matches(regex)) {
           return false;
         }
       }
