@@ -52,15 +52,15 @@ public class Cli {
       description = "Search for jars that are not potentially unused")
   private static boolean searchUnusedOnly = false;
 
-  @Argument(value = "unusedJarExclusions",
-      description = "Comma delimited regex for excluding jars from unused jar search. " +
+  @Argument(value = "searchJarExclusions",
+      description = "Comma delimited regex for excluding jars from search unused or used searches. " +
               "Inclusions filter first, then exclusions filter the returned subset")
-  private static String[] unusedJarExclusions = new String[]{};
+  private static String[] searchJarExclusions = new String[]{};
 
-  @Argument(value = "unusedJarInclusions",
-      description = "Comma delimited regex for which specific jars should be checked in unused jar search. " +
+  @Argument(value = "searchJarInclusions",
+      description = "Comma delimited regex for which specific jars should be checked unused or used searches. " +
               "Inclusions filter first, then exclusions filter the returned subset")
-  private static String[] unusedJarInclusions = new String[]{};
+  private static String[] searchJarInclusions = new String[]{};
 
   @Argument(value ="threads",
       description = "Number of threads to use for graph construction. Defaults to 5")
@@ -86,6 +86,10 @@ public class Cli {
       description = "Enable stdout reporter. Has memory impact if you searches eat up a lot of memory")
   private static boolean stdoutReporter = false;
 
+  @Argument(value = "filterResults",
+      description = "Enable filtering on results so only one dependency chain from user class to jar is present per jar")
+  private static boolean filterResults = false;
+
   public static void main(String[] args) {
     new Cli().parseArgs(args);
 
@@ -103,9 +107,10 @@ public class Cli {
     options.setSingleThreadSearch(searchThreads);
     options.setSearchTimeout(searchTimeout);
     options.setExcludeTestDirs(excludeTestDirs);
+    options.setFilterResults(filterResults);
     Arrays.asList(depExclusions).forEach(options::addDepExclusion);
-    Arrays.asList(unusedJarExclusions).forEach(options::addUnusedJarExclusion);
-    Arrays.asList(unusedJarInclusions).forEach(options::addUnusedJarInclusion);
+    Arrays.asList(searchJarExclusions).forEach(options::addSearchJarExclusion);
+    Arrays.asList(searchJarInclusions).forEach(options::addSearchJarInclusion);
 
     ThirdPartyLibraryAnalyzer analyzer = new ThirdPartyLibraryAnalyzer(options);
 

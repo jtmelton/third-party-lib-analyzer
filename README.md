@@ -99,8 +99,9 @@ searchTimeout | Time out in minutes before canceling search and lowering depth |
 excludeTestDirs | Flag for excluding anything in a test directory when building DB | false | no
 depExclusions | Comma delimited list of regex used for excluding dependencies when building DB | empty | no
 searchUnusedOnly | Search for unused jars. Cannot be used in conjunction with searchOnly | false | no
-unusedJarExclusions | Comma delimited regex for excluding jars from unused jar search. Filters after inclusions | empty | no
-unusedJarInclusions | Comma delimited regex for specifying which jars to include in unused search. Filter before exclusions | empty | no
+searchJarExclusions | Comma delimited regex for excluding jars from used/unused jar searches. Filters after inclusions | empty | no
+searchJarInclusions | Comma delimited regex for specifying which jars to include in used/unused searches. Filter before exclusions | empty | no
+filterResults | Enable filtering on results so only one dependency chain from user class to jar is present per jar | false | no
 
 
 ### Performance

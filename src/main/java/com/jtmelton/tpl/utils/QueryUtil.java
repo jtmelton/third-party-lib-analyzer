@@ -7,16 +7,11 @@ import org.neo4j.graphdb.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
-import static java.util.concurrent.TimeUnit.HOURS;
 import static java.util.concurrent.TimeUnit.MINUTES;
 
 public class QueryUtil {
@@ -52,67 +47,6 @@ public class QueryUtil {
 
   private static final String CLASS_TO_USER_QUERY = "MATCH (jarClass:Class) WHERE ID(jarClass) = { `id` } WITH jarClass " +
           "MATCH (jarClass)<-[:classesDependedOn*..12]-(userClass:UserClass) RETURN userClass LIMIT 1";
-
-  private static final AtomicInteger userClassCounter = new AtomicInteger();
-
-  private static final AtomicInteger jarSearchesCounter = new AtomicInteger();
-
-  public static void searchJarToClass(GraphDatabaseService graphDb, QueryResult results, String depth,
-                                      String searchTerm, ExecutorService executor, int timeout) {
-    List<Map<String, Object>> allJars = getAllJars(graphDb);
-
-    final List<Map<String, Object>> jars = new ArrayList<>();
-    jars.addAll(allJars.stream().filter(j -> ((String) j.get("name")).contains(searchTerm))
-            .collect(Collectors.toList()));
-
-    LOG.info("Retrieved {} jar nodes", jars.size());
-
-    if(!jars.isEmpty()) {
-      Set<String> uniqueJars = new HashSet<>();
-      for(Map<String, Object> jar : jars) {
-        String absoluteJarName = (String) jar.get("name");
-        Path jarPath = Paths.get(absoluteJarName, "");
-        String jarName = jarPath.getFileName().toString();
-
-        // TODO: Switch to storing hashes of jars in DB for identifying duplicate
-        if(uniqueJars.contains(jarName)) {
-          results.addJarName(absoluteJarName);
-          LOG.info("Ignoring duplicate jar {}", absoluteJarName);
-          continue;
-        }
-
-        uniqueJars.add(jarName);
-
-        jarSearchesCounter.incrementAndGet();
-        executor.submit(searchForUserClasses(graphDb, jar, results, depth, timeout));
-      }
-    }
-  }
-
-  public static QueryResult findAffectedUserClasses(GraphDatabaseService graphDb,
-                                                    String searchTerm,
-                                                    String depth,
-                                                    boolean singleThreadSearch,
-                                                    int searchTimeout) throws InterruptedException {
-    QueryResult results = new QueryResult(searchTerm);
-    ExecutorService executor;
-
-    if (singleThreadSearch) {
-      executor = Executors.newFixedThreadPool(1);
-    } else {
-      executor = Executors.newFixedThreadPool(2);
-    }
-
-    searchJarToClass(graphDb, results, depth, searchTerm, executor, searchTimeout);
-
-    executor.shutdown();
-    executor.awaitTermination(24, HOURS);
-
-    userClassCounter.set(0);
-    jarSearchesCounter.set(0);
-
-    return results;
-  }
 
   public static List<Long> getJarClassIds(long id, GraphDatabaseService graphDb) {
     List<Long> classIds = new ArrayList<>();
@@ -174,8 +108,9 @@ public class QueryUtil {
     return allJars;
   }
 
-  private static Callable<Boolean> searchForUserClasses(GraphDatabaseService graphDb, Map<String, Object> jar,
-                                                        QueryResult results, String depth, int timeout) {
+  public static Callable<Boolean> searchForUserClasses(GraphDatabaseService graphDb, Map<String, Object> jar,
+                                                        QueryResult results, String depth, int timeout,
+                                                       int totalJars, AtomicInteger classCounter,boolean filter) {
     return () -> {
       boolean success = false;
       String depthToUse = depth;
@@ -198,17 +133,24 @@ public class QueryUtil {
               continue;
             }
 
-            List<List<Map<String, Object>>> filteredChains = filterChainResults(chains);
+            List<List<Map<String, Object>>> chainsToAdd;
+
+            if(filter) {
+              chainsToAdd = filterChainResults(chains);
+            } else {
+              chainsToAdd = chains;
+            }
+
             result = null;
 
             synchronized (results) {
               results.addJarName((String) jar.get("name"));
-              filteredChains.forEach(results::addClassChain);
+              chainsToAdd.forEach(results::addClassChain);
             }
           }
 
-          int counter = userClassCounter.incrementAndGet();
-          LOG.info("Completed {} out of {} search queries", counter, jarSearchesCounter.get());
+          int counter = classCounter.incrementAndGet();
+          LOG.info("Completed {} out of {} search queries", counter, totalJars);
           tx.success();
         } catch (TransactionTerminatedException tte) {
           if(depthToUse.equals("1")) {

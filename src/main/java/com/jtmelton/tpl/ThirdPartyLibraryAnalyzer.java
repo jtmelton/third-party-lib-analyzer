@@ -62,17 +62,23 @@ public class ThirdPartyLibraryAnalyzer {
 
   private final Collection<String> depExclusions;
 
-  private final Collection<String> unusedJarExclusions;
+  private final Collection<String> searchJarExclusions;
 
-  private final Collection<String> unusedJarInclusions;
+  private final Collection<String> searchJarInclusions;
+
+  private final boolean filterResults;
 
   private final boolean excludeTestDirs;
 
   private GraphDatabaseService graphDb;
 
-  private AtomicInteger classesProcessed = new AtomicInteger();
+  private final AtomicInteger classesProcessed = new AtomicInteger();
 
-  private AtomicInteger jarsProcessed = new AtomicInteger();
+  private final AtomicInteger jarsProcessed = new AtomicInteger();
+
+  private final AtomicInteger userClassCounter = new AtomicInteger();
+
+  private final AtomicInteger jarSearchesCounter = new AtomicInteger();
 
   private ExecutorService executor;
 
@@ -88,8 +94,9 @@ public class ThirdPartyLibraryAnalyzer {
     this.searchTimeout = options.getSearchTimeout();
     this.depExclusions = options.getDepExclusions();
     this.excludeTestDirs = options.isExcludeTestDirs();
-    this.unusedJarExclusions = options.getUnusedJarExclusions();
-    this.unusedJarInclusions = options.getUnusedJarInclusions();
+    this.searchJarExclusions = options.getSearchJarExclusions();
+    this.searchJarInclusions = options.getSearchJarInclusions();
+    this.filterResults = options.isFilterResults();
   }
 
   private void dbSetup() {
@@ -138,7 +145,7 @@ public class ThirdPartyLibraryAnalyzer {
     executor.awaitTermination(24, HOURS);
     executor = Executors.newFixedThreadPool(threads);
 
-    classesProcessed = new AtomicInteger();
+    classesProcessed.set(0);
 
     LOG.info("Writing user class dependency relationships to db");
     classNodes.forEach(c -> executor.submit(buildClassRelationships(c)));
@@ -163,8 +170,8 @@ public class ThirdPartyLibraryAnalyzer {
     List<Map<String, Object>> jars = QueryUtil.getAllJars(graphDb);
 
     List<Map<String, Object>> filteredJars = jars.stream()
-            .filter(unusedJarInclude())
-            .filter(unusedJarExclude())
+            .filter(searchJarInclude())
+            .filter(searchJarExclude())
             .collect(Collectors.toList());
 
     Collection<String> unusedJars = new ArrayList<>();
@@ -203,13 +210,19 @@ public class ThirdPartyLibraryAnalyzer {
 
   public void reportAffectedClasses(Collection<String> searchTerms, String depth,
                                     String outputDir) throws InterruptedException {
+    if(graphDb == null) {
+      dbSetup();
+    }
+
+    startTime = System.nanoTime();
+
     ResultsProcessor processor = new ResultsProcessor(graphDb);
     reporters.forEach(processor::registerReporter);
 
     for(String searchTerm : searchTerms) {
       LOG.info("Searching for classes affected by dependency {}", searchTerm);
 
-      QueryResult results = QueryUtil.findAffectedUserClasses(graphDb, searchTerm, depth, singleThreadSearch, searchTimeout);
+      QueryResult results = findAffectedUserClasses(searchTerm, depth, singleThreadSearch);
       LOG.info("Processing results for {} import chains", results.getClassChains().size());
       processor.process(results);
     }
@@ -244,6 +257,67 @@ public class ThirdPartyLibraryAnalyzer {
         }
       }
     };
+  }
+
+  private QueryResult findAffectedUserClasses(String searchTerm, String depth,
+                                             boolean singleThreadSearch) throws InterruptedException {
+    QueryResult results = new QueryResult(searchTerm);
+    ExecutorService executor;
+
+    if (singleThreadSearch) {
+      executor = Executors.newFixedThreadPool(1);
+    } else {
+      executor = Executors.newFixedThreadPool(2);
+    }
+
+    searchJarToClass(graphDb, results, depth, searchTerm, executor, searchTimeout);
+
+    executor.shutdown();
+    executor.awaitTermination(24, HOURS);
+
+    userClassCounter.set(0);
+    jarSearchesCounter.set(0);
+
+    return results;
+  }
+
+  private void searchJarToClass(GraphDatabaseService graphDb, QueryResult results, String depth,
+                                      String searchTerm, ExecutorService executor, int timeout) {
+    List<Map<String, Object>> allJars = QueryUtil.getAllJars(graphDb);
+
+    final List<Map<String, Object>> jars = allJars.stream()
+            .filter(searchJarInclude())
+            .filter(searchJarExclude())
+            .filter(j -> ((String) j.get("name")).contains(searchTerm))
+            .collect(Collectors.toList());
+
+    LOG.info("Retrieved {} jar nodes", jars.size());
+
+    if(jars.isEmpty()) {
+      LOG.info("No jars found to analyze");
+      return;
+    }
+
+    Set<String> uniqueJars = new HashSet<>();
+    for(Map<String, Object> jar : jars) {
+      String absoluteJarName = (String) jar.get("name");
+      Path jarPath = Paths.get(absoluteJarName, "");
+      String jarName = jarPath.getFileName().toString();
+
+      // TODO: Switch to storing hashes of jars in DB for identifying duplicate
+      if(uniqueJars.contains(jarName)) {
+        jarSearchesCounter.incrementAndGet();
+        results.addJarName(absoluteJarName);
+        LOG.info("Ignoring duplicate jar {}", absoluteJarName);
+        continue;
+      }
+
+      uniqueJars.add(jarName);
+
+      jarSearchesCounter.incrementAndGet();
+      executor.submit(QueryUtil.searchForUserClasses(graphDb, jar, results, depth,
+              timeout, jars.size(), userClassCounter, filterResults));
+    }
   }
 
   private Runnable buildClassRelationships(ClassNode classNode) {
@@ -296,10 +370,14 @@ public class ThirdPartyLibraryAnalyzer {
     };
   }
 
-  private Predicate<Map<String, Object>> unusedJarInclude() {
+  private Predicate<Map<String, Object>> searchJarInclude() {
     return j -> {
+      if(searchJarInclusions.isEmpty()) {
+        return true;
+      }
+
       String name = (String) j.get("name");
-      for(String regex : unusedJarInclusions) {
+      for(String regex : searchJarInclusions) {
         if(name.matches(regex)) {
           return true;
         }
@@ -309,10 +387,14 @@ public class ThirdPartyLibraryAnalyzer {
     };
   }
 
-  private Predicate<Map<String, Object>> unusedJarExclude() {
+  private Predicate<Map<String, Object>> searchJarExclude() {
     return j -> {
+      if(searchJarExclusions.isEmpty()) {
+        return true;
+      }
+
       String name = (String) j.get("name");
-      for(String regex : unusedJarExclusions) {
+      for(String regex : searchJarExclusions) {
         if(name.matches(regex)) {
           return false;
         }
