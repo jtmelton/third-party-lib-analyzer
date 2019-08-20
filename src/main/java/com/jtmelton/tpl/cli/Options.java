@@ -20,7 +20,13 @@ public class Options {
 
   private boolean excludeTestDirs = true;
 
+  private boolean filterResults = false;
+
   private Collection<String> depExclusions = new ArrayList<>();
+
+  private Collection<String> searchJarExclusions = new ArrayList<>();
+
+  private Collection<String> searchJarInclusions = new ArrayList<>();
 
   public boolean isSingleThreadSearch() {
     return singleThreadSearch;
@@ -82,7 +88,31 @@ public class Options {
     depExclusions.add(exclusion);
   }
 
+  public void addSearchJarExclusion(String exclusion) {
+    searchJarExclusions.add(exclusion);
+  }
+
+  public void addSearchJarInclusion(String inclusion) {
+    searchJarInclusions.add(inclusion);
+  }
+
   public Collection<String> getDepExclusions() {
     return Collections.unmodifiableCollection(depExclusions);
+  }
+
+  public Collection<String> getSearchJarExclusions() {
+    return Collections.unmodifiableCollection(searchJarExclusions);
+  }
+
+  public Collection<String> getSearchJarInclusions() {
+    return Collections.unmodifiableCollection(searchJarInclusions);
+  }
+
+  public boolean isFilterResults() {
+    return filterResults;
+  }
+
+  public void setFilterResults(boolean filterResults) {
+    this.filterResults = filterResults;
   }
 }

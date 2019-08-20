@@ -48,6 +48,20 @@ public class Cli {
       description = "Search existing DB without building/updating it")
   private static boolean searchOnly = false;
 
+  @Argument(value = "searchUnusedOnly",
+      description = "Search for jars that are not potentially unused")
+  private static boolean searchUnusedOnly = false;
+
+  @Argument(value = "searchJarExclusions",
+      description = "Comma delimited regex for excluding jars from search unused or used searches. " +
+              "Inclusions filter first, then exclusions filter the returned subset")
+  private static String[] searchJarExclusions = new String[]{};
+
+  @Argument(value = "searchJarInclusions",
+      description = "Comma delimited regex for which specific jars should be checked unused or used searches. " +
+              "Inclusions filter first, then exclusions filter the returned subset")
+  private static String[] searchJarInclusions = new String[]{};
+
   @Argument(value ="threads",
       description = "Number of threads to use for graph construction. Defaults to 5")
   private static Integer threads = 5;
@@ -72,8 +86,18 @@ public class Cli {
       description = "Enable stdout reporter. Has memory impact if you searches eat up a lot of memory")
   private static boolean stdoutReporter = false;
 
+  @Argument(value = "filterResults",
+      description = "Enable filtering on results so only one dependency chain from user class to jar is present per jar")
+  private static boolean filterResults = false;
+
   public static void main(String[] args) {
     new Cli().parseArgs(args);
+
+    if(searchOnly && searchUnusedOnly) {
+      LOG.error("Only one type of search is allowed at a time. " +
+              "Either use -searchOnly or -searchUnusedOnly.");
+      return;
+    }
 
     Options options = new Options();
     options.setJarsDirectory(jarsDirectory);
@@ -83,16 +107,19 @@ public class Cli {
     options.setSingleThreadSearch(searchThreads);
     options.setSearchTimeout(searchTimeout);
     options.setExcludeTestDirs(excludeTestDirs);
+    options.setFilterResults(filterResults);
     Arrays.asList(depExclusions).forEach(options::addDepExclusion);
+    Arrays.asList(searchJarExclusions).forEach(options::addSearchJarExclusion);
+    Arrays.asList(searchJarInclusions).forEach(options::addSearchJarInclusion);
 
     ThirdPartyLibraryAnalyzer analyzer = new ThirdPartyLibraryAnalyzer(options);
 
     try {
-      if(!searchOnly) {
+      if(!searchOnly && !searchUnusedOnly) {
         analyzer.buildDependencyGraph();
       }
 
-      if(jarNames != null) {
+      if(jarNames != null && searchOnly) {
         try {
           analyzer.registerReporter(new JsonReporter(outputDir));
           analyzer.registerReporter(new VisualizationReporter(outputDir));
@@ -111,6 +138,10 @@ public class Cli {
       if(jarNames == null && searchOnly) {
         LOG.warn("Missing arg -jarNames");
       }
+
+      if(searchUnusedOnly) {
+        analyzer.reportUnusedJars(outputDir);
+      }
     } catch(InterruptedException ie) {
       LOG.error("Process interrupted while waiting for threads to complete", ie);
     } catch (IOException ioe) {
@@ -121,5 +152,4 @@ public class Cli {
   private void parseArgs(String[] args) {
     Args.parse(this, args);
   }
-
 }
