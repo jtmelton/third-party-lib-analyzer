@@ -208,6 +208,30 @@ public class ThirdPartyLibraryAnalyzer {
     }
   }
 
+  public void reportDependencies(Collection<String> searchTerms, Options options) throws InterruptedException {
+    startTime = System.nanoTime();
+
+    if(graphDb == null) {
+      dbSetup();
+    }
+
+    ResultsProcessor processor = new ResultsProcessor(graphDb);
+    reporters.forEach(processor::registerReporter);
+
+    for(String searchTerm : searchTerms) {
+      LOG.info("Searching for dependencies of {}", searchTerm);
+
+      QueryResult results = QueryUtil.findDependencies(graphDb, searchTerm, options);
+      LOG.info("Processing results for {} import chains", results.getClassChains().size());
+      processor.process(results);
+    }
+
+    processor.generateReports(options.getOutputDir());
+
+    long elapsedTime = System.nanoTime() - startTime;
+    LOG.info("Report generation time {}", formatElapsedTime(elapsedTime));
+  }
+
   public void reportAffectedClasses(Collection<String> searchTerms, String depth,
                                     String outputDir) throws InterruptedException {
     if(graphDb == null) {

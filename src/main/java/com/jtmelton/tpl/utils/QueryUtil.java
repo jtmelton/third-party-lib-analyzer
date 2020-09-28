@@ -1,5 +1,6 @@
 package com.jtmelton.tpl.utils;
 
+import com.jtmelton.tpl.cli.Options;
 import com.jtmelton.tpl.results.QueryResult;
 import com.jtmelton.tpl.domain.ClassNode;
 import com.jtmelton.tpl.domain.JarNode;
@@ -9,9 +10,13 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
+import static java.util.concurrent.TimeUnit.HOURS;
 import static java.util.concurrent.TimeUnit.MINUTES;
 
 public class QueryUtil {
@@ -38,6 +43,8 @@ public class QueryUtil {
 
   private static final String GET_ALL_JARS_QUERY = "MATCH (jar:Jar) RETURN collect({id: ID(jar), name: jar.name})";
 
+  private static final String GET_ALL_USER_CLASSES_QUERY = "MATCH (class:UserClass) RETURN collect({id: ID(class), name: class.name})";
+
   private static final String JAR_TO_USER_CLASS_QUERY = "MATCH (jar:Jar) WHERE ID(jar) = { `id` } WITH jar " +
           "MATCH path = ((jar)<-[:classes]-(:Class)<-[:classesDependedOn*..%s]-(:UserClass)) " +
           "RETURN collect(extract(n IN nodes(path) | {id: ID(n), name: n.name}))";
@@ -47,6 +54,9 @@ public class QueryUtil {
 
   private static final String CLASS_TO_USER_QUERY = "MATCH (jarClass:Class) WHERE ID(jarClass) = { `id` } WITH jarClass " +
           "MATCH (jarClass)<-[:classesDependedOn*..12]-(userClass:UserClass) RETURN userClass LIMIT 1";
+
+  private static final String USER_CLASS_TO_JAR_QUERY = "MATCH (class:UserClass) WHERE ID(class) = { `id` } WITH class " +
+          "MATCH path = ((class)-[:classesDependedOn*..%s]->(:Class)-[:classes]->(:Jar)) RETURN collect(extract(n IN nodes(path) | {id: ID(n), name: n.name}))";
 
   public static List<Long> getJarClassIds(long id, GraphDatabaseService graphDb) {
     List<Long> classIds = new ArrayList<>();
@@ -88,6 +98,67 @@ public class QueryUtil {
     return result;
   }
 
+  public static QueryResult findDependencies(GraphDatabaseService graphDb,
+                                             String searchTerm,
+                                             Options options) throws InterruptedException {
+    QueryResult results = new QueryResult(searchTerm);
+    ExecutorService executor;
+
+    if (options.isSingleThreadSearch()) {
+      executor = Executors.newFixedThreadPool(1);
+    } else {
+      executor = Executors.newFixedThreadPool(2);
+    }
+
+    searchUserClassToJar(graphDb, results, searchTerm, executor, options);
+
+    executor.shutdown();
+    executor.awaitTermination(24, HOURS);
+
+    return results;
+  }
+
+  public static void searchUserClassToJar(GraphDatabaseService graphDb, QueryResult results,
+                                          String searchTerm, ExecutorService executor, Options options) {
+    List<Map<String, Object>> allClasses = getAllClasses(graphDb);
+
+    final List<Map<String, Object>> classes = new ArrayList<>();
+
+    Predicate<Map<String, Object>> filter = options.isExactMatch() ? equals(searchTerm) : contains(searchTerm);
+    classes.addAll(allClasses.stream().filter(filter)
+            .collect(Collectors.toList()));
+
+    LOG.info("Retrieved {} user class nodes", classes.size());
+
+    if(classes.isEmpty()) {
+      return;
+    }
+
+    for(Map<String, Object> clazz : classes) {
+      executor.submit(searchForDependencyJars(graphDb, clazz, results, options));
+    }
+  }
+
+  private static List<Map<String, Object>> getAllClasses(GraphDatabaseService graphDb) {
+    List<Map<String, Object>> allClasses = new ArrayList<>();
+
+    try(Transaction tx = graphDb.beginTx()) {
+
+      Result query = graphDb.execute(GET_ALL_USER_CLASSES_QUERY, Collections.EMPTY_MAP);
+
+      while(query.hasNext()) {
+        Map<String, Object> results = query.next();
+
+        String key = "collect({id: ID(class), name: class.name})";
+        allClasses = (List<Map<String, Object>>) results.get(key);
+      }
+
+      tx.success();
+    }
+
+    return allClasses;
+  }
+
   public static List<Map<String, Object>> getAllJars(GraphDatabaseService graphDb) {
     List<Map<String, Object>> allJars = new ArrayList<>();
 
@@ -106,6 +177,69 @@ public class QueryUtil {
     }
 
     return allJars;
+  }
+
+  private static Callable<Boolean> searchForDependencyJars(GraphDatabaseService graphDb, Map<String, Object> clazz,
+                                                           QueryResult results, Options options) {
+    return () -> {
+      boolean success = true;
+      // TODO: Add dynamically decreasing depth
+
+      try(Transaction tx = graphDb.beginTx(options.getSearchTimeout(), MINUTES)) {
+        Map<String, Object> params = new HashMap<>();
+        params.put("id", clazz.get("id"));
+
+        String query = String.format(USER_CLASS_TO_JAR_QUERY, options.getSearchDepth());
+        Result result = graphDb.execute(query, params);
+
+        while(result != null && result.hasNext()) {
+          Map<String, Object> resultMap = result.next();
+
+          String key = "collect(extract(n IN nodes(path) | {id: ID(n), name: n.name}))";
+          List<List<Map<String, Object>>> chains = (List<List<Map<String, Object>>>) resultMap.get(key);
+
+          if(chains.isEmpty()) {
+            continue;
+          }
+
+          List<List<Map<String, Object>>> chainsToAdd;
+
+          if(options.isFilterResults()) {
+            chainsToAdd = filterChainResults(chains);
+          } else {
+            chainsToAdd = chains;
+          }
+
+          result = null;
+
+          synchronized (results) {
+            for(List<Map<String, Object>> chain : chainsToAdd) {
+              results.addJarName((String) chain.get(chain.size() - 1).get("name"));
+            }
+
+            Set<String> added = new HashSet<>();
+            // results.addClassChain expects jars to be first element
+            for(List<Map<String, Object>> chain : chainsToAdd) {
+              Collections.reverse(chain);
+
+              if(added.contains((String) chain.get(1).get("name"))) {
+                continue;
+              }
+
+              added.add((String) chain.get(1).get("name"));
+              results.addClassChain(chain);
+            }
+          }
+        }
+
+        tx.success();
+      } catch(TransactionTerminatedException tte) {
+        LOG.warn("Search failed for {}", clazz.get("name"));
+        success = false;
+      }
+
+      return success;
+    };
   }
 
   public static Callable<Boolean> searchForUserClasses(GraphDatabaseService graphDb, Map<String, Object> jar,
@@ -278,5 +412,13 @@ public class QueryUtil {
     } catch (QueryExecutionException qee) {
       LOG.warn("Class to dependency class relationship query failed", qee);
     }
+  }
+
+  private static Predicate<Map<String, Object>> contains(String searchTerm) {
+    return p -> ((String) p.get("name")).contains(searchTerm);
+  }
+
+  private static Predicate<Map<String, Object>> equals(String searchTerm) {
+    return p -> p.get("name").equals(searchTerm);
   }
 }
