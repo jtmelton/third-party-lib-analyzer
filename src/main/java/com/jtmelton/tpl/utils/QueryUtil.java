@@ -8,6 +8,8 @@ import org.neo4j.graphdb.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -57,6 +59,31 @@ public class QueryUtil {
 
   private static final String USER_CLASS_TO_JAR_QUERY = "MATCH (class:UserClass) WHERE ID(class) = { `id` } WITH class " +
           "MATCH path = ((class)-[:classesDependedOn*..%s]->(:Class)-[:classes]->(:Jar)) RETURN collect(extract(n IN nodes(path) | {id: ID(n), name: n.name}))";
+
+  private static final AtomicInteger userClassCounter = new AtomicInteger();
+
+  private static final AtomicInteger jarSearchesCounter = new AtomicInteger();
+
+  public static QueryResult findAffectedUserClasses(GraphDatabaseService graphDb, String searchTerm, Options options) throws InterruptedException {
+    QueryResult results = new QueryResult(searchTerm);
+    ExecutorService executor;
+
+    if (options.isSingleThreadSearch()) {
+      executor = Executors.newFixedThreadPool(1);
+    } else {
+      executor = Executors.newFixedThreadPool(2);
+    }
+
+    searchJarToClass(graphDb, results, searchTerm, executor, options);
+
+    executor.shutdown();
+    executor.awaitTermination(24, HOURS);
+
+    userClassCounter.set(0);
+    jarSearchesCounter.set(0);
+
+    return results;
+  }
 
   public static List<Long> getJarClassIds(long id, GraphDatabaseService graphDb) {
     List<Long> classIds = new ArrayList<>();
@@ -124,7 +151,7 @@ public class QueryUtil {
 
     final List<Map<String, Object>> classes = new ArrayList<>();
 
-    Predicate<Map<String, Object>> filter = options.isExactMatch() ? equals(searchTerm) : contains(searchTerm);
+    Predicate<Map<String, Object>> filter = options.isExactMatch() ? Filters.equals(searchTerm) : Filters.contains(searchTerm);
     classes.addAll(allClasses.stream().filter(filter)
             .collect(Collectors.toList()));
 
@@ -177,6 +204,47 @@ public class QueryUtil {
     }
 
     return allJars;
+  }
+
+  private static void searchJarToClass(GraphDatabaseService graphDb, QueryResult results,
+                                String searchTerm, ExecutorService executor, Options options) {
+    List<Map<String, Object>> allJars = QueryUtil.getAllJars(graphDb);
+
+    Predicate<Map<String, Object>> filter = options.isExactMatch() ? Filters.equals(searchTerm) : Filters.contains(searchTerm);
+
+    final List<Map<String, Object>> jars = allJars.stream()
+            .filter(Filters.searchJarInclude(options.getSearchJarInclusions()))
+            .filter(Filters.searchJarExclude(options.getSearchJarExclusions()))
+            .filter(filter)
+            .collect(Collectors.toList());
+
+    LOG.info("Retrieved {} jar nodes", jars.size());
+
+    if(jars.isEmpty()) {
+      LOG.info("No jars found to analyze");
+      return;
+    }
+
+    Set<String> uniqueJars = new HashSet<>();
+    for(Map<String, Object> jar : jars) {
+      String absoluteJarName = (String) jar.get("name");
+      Path jarPath = Paths.get(absoluteJarName, "");
+      String jarName = jarPath.getFileName().toString();
+
+      // TODO: Switch to storing hashes of jars in DB for identifying duplicate
+      if(uniqueJars.contains(jarName)) {
+        jarSearchesCounter.incrementAndGet();
+        results.addJarName(absoluteJarName);
+        LOG.info("Ignoring duplicate jar {}", absoluteJarName);
+        continue;
+      }
+
+      uniqueJars.add(jarName);
+
+      jarSearchesCounter.incrementAndGet();
+      executor.submit(QueryUtil.searchForUserClasses(graphDb, jar, results,
+              jars.size(), userClassCounter, options));
+    }
   }
 
   private static Callable<Boolean> searchForDependencyJars(GraphDatabaseService graphDb, Map<String, Object> clazz,
@@ -242,15 +310,41 @@ public class QueryUtil {
     };
   }
 
+  public static Runnable searchIfJarIsUsed(GraphDatabaseService graphDb, Map<String, Object> entry, Collection<String> results,
+                                     AtomicInteger i, int size, int searchTimeout) {
+    return () -> {
+      String name = (String) entry.get("name");
+
+      LOG.info("Jar {} of {}: {}", i.incrementAndGet(), size, name);
+
+      List<Long> ids = QueryUtil.getJarClassIds((Long) entry.get("id"), graphDb);
+
+      boolean result = false;
+      for(long id : ids) {
+        result = QueryUtil.isClassUsedByUser(id, graphDb, searchTimeout);
+
+        if(result) {
+          break;
+        }
+      }
+
+      if(!result) {
+        synchronized (results) {
+          results.add(name);
+        }
+      }
+    };
+  }
+
   public static Callable<Boolean> searchForUserClasses(GraphDatabaseService graphDb, Map<String, Object> jar,
-                                                        QueryResult results, String depth, int timeout,
-                                                       int totalJars, AtomicInteger classCounter,boolean filter) {
+                                                        QueryResult results, int totalJars,
+                                                       AtomicInteger classCounter, Options options) {
     return () -> {
       boolean success = false;
-      String depthToUse = depth;
+      String depthToUse = options.getSearchDepth();
 
       while(!success) {
-        try (Transaction tx = graphDb.beginTx(timeout, MINUTES)) {
+        try (Transaction tx = graphDb.beginTx(options.getSearchTimeout(), MINUTES)) {
           Map<String, Object> params = new HashMap<>();
           params.put("id", jar.get("id"));
 
@@ -269,7 +363,7 @@ public class QueryUtil {
 
             List<List<Map<String, Object>>> chainsToAdd;
 
-            if(filter) {
+            if(options.isFilterResults()) {
               chainsToAdd = filterChainResults(chains);
             } else {
               chainsToAdd = chains;
@@ -412,13 +506,5 @@ public class QueryUtil {
     } catch (QueryExecutionException qee) {
       LOG.warn("Class to dependency class relationship query failed", qee);
     }
-  }
-
-  private static Predicate<Map<String, Object>> contains(String searchTerm) {
-    return p -> ((String) p.get("name")).contains(searchTerm);
-  }
-
-  private static Predicate<Map<String, Object>> equals(String searchTerm) {
-    return p -> p.get("name").equals(searchTerm);
   }
 }

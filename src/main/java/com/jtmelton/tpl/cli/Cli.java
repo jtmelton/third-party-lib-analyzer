@@ -126,11 +126,12 @@ public class Cli {
     ThirdPartyLibraryAnalyzer analyzer = new ThirdPartyLibraryAnalyzer(options);
 
     try {
+      // TODO: Allow for all search types in one pass
       if(!searchOnly && !searchUnusedOnly) {
-        analyzer.buildDependencyGraph();
+        analyzer.buildDependencyGraph(options);
       }
 
-      if(jarNames != null) {
+      if(jarNames != null && searchOnly) {
         try {
           analyzer.registerReporter(new JsonReporter(outputDir));
           analyzer.registerReporter(new VisualizationReporter(outputDir));
@@ -143,10 +144,10 @@ public class Cli {
         }
 
         Collection<String> jarNamesList = Arrays.asList(jarNames);
-        analyzer.reportAffectedClasses(jarNamesList, searchDepth, outputDir);
+        analyzer.reportAffectedClasses(jarNamesList, options);
       }
 
-      if(classNames != null) {
+      if(classNames != null && searchOnly) {
         analyzer.registerReporter(new JsonReporter(outputDir));
         Collection<String> classNamesList = Arrays.asList(classNames);
         analyzer.reportDependencies(classNamesList, options);
@@ -157,7 +158,7 @@ public class Cli {
       }
 
       if(searchUnusedOnly) {
-        analyzer.reportUnusedJars(outputDir);
+        analyzer.reportUnusedJars(options);
       }
     } catch(InterruptedException ie) {
       LOG.error("Process interrupted while waiting for threads to complete", ie);
