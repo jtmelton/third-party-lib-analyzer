@@ -18,9 +18,15 @@ public class Options {
 
   private int searchTimeout;
 
+  private String searchDepth = "1";
+
   private boolean excludeTestDirs = true;
 
   private boolean filterResults = false;
+
+  private boolean exactMatch = false;
+
+  private String outputDir = "";
 
   private Collection<String> depExclusions = new ArrayList<>();
 
@@ -114,5 +120,29 @@ public class Options {
 
   public void setFilterResults(boolean filterResults) {
     this.filterResults = filterResults;
+  }
+
+  public String getOutputDir() {
+    return outputDir;
+  }
+
+  public void setOutputDir(String outputDir) {
+    this.outputDir = outputDir;
+  }
+
+  public boolean isExactMatch() {
+    return exactMatch;
+  }
+
+  public void setExactMatch(boolean exactMatch) {
+    this.exactMatch = exactMatch;
+  }
+
+  public String getSearchDepth() {
+    return searchDepth;
+  }
+
+  public void setSearchDepth(String searchDepth) {
+    this.searchDepth = searchDepth;
   }
 }

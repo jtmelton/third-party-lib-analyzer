@@ -22,6 +22,10 @@ public class Cli {
       description = "Directory containing 3rd/4th party library jars for analysis")
   private static String jarsDirectory = null;
 
+  @Argument(value = "userClassNames",
+          description = "Comma delimited user class name search terms for finding dependencies")
+  private static String[] classNames = null;
+
   @Argument(value = "classesDirectory",
       required = true,
       description = "Directory containing java classes (class files) for analysis")
@@ -90,6 +94,10 @@ public class Cli {
       description = "Enable filtering on results so only one dependency chain from user class to jar is present per jar")
   private static boolean filterResults = false;
 
+  @Argument(value = "exactMatch",
+          description = "Enables exact matching for searches. They are contains searches by default")
+  private static boolean exactMatch = false;
+
   public static void main(String[] args) {
     new Cli().parseArgs(args);
 
@@ -104,6 +112,9 @@ public class Cli {
     options.setClassesDirectory(classesDirectory);
     options.setDbDirectory(dbDirectory);
     options.setThreads(threads);
+    options.setOutputDir(outputDir);
+    options.setExactMatch(exactMatch);
+    options.setSearchDepth(searchDepth);
     options.setSingleThreadSearch(searchThreads);
     options.setSearchTimeout(searchTimeout);
     options.setExcludeTestDirs(excludeTestDirs);
@@ -115,8 +126,9 @@ public class Cli {
     ThirdPartyLibraryAnalyzer analyzer = new ThirdPartyLibraryAnalyzer(options);
 
     try {
+      // TODO: Allow for all search types in one pass
       if(!searchOnly && !searchUnusedOnly) {
-        analyzer.buildDependencyGraph();
+        analyzer.buildDependencyGraph(options);
       }
 
       if(jarNames != null && searchOnly) {
@@ -132,15 +144,21 @@ public class Cli {
         }
 
         Collection<String> jarNamesList = Arrays.asList(jarNames);
-        analyzer.reportAffectedClasses(jarNamesList, searchDepth, outputDir);
+        analyzer.reportAffectedClasses(jarNamesList, options);
       }
 
-      if(jarNames == null && searchOnly) {
-        LOG.warn("Missing arg -jarNames");
+      if(classNames != null && searchOnly) {
+        analyzer.registerReporter(new JsonReporter(outputDir));
+        Collection<String> classNamesList = Arrays.asList(classNames);
+        analyzer.reportDependencies(classNamesList, options);
+      }
+
+      if(jarNames == null && classNames == null && searchOnly) {
+        LOG.warn("Missing args -jarNames or -userClassNames");
       }
 
       if(searchUnusedOnly) {
-        analyzer.reportUnusedJars(outputDir);
+        analyzer.reportUnusedJars(options);
       }
     } catch(InterruptedException ie) {
       LOG.error("Process interrupted while waiting for threads to complete", ie);

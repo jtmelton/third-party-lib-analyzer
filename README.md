@@ -83,6 +83,9 @@ Top left is a list of jars present which are paginated. Top right lists stats. T
 ### Unused Jars Search
 When using the -searchUnusedOnly argument, a query is run to determine what jars in the database are not referenced by a user class. The accuracy of the results will be based on the specified depth of the search. Like in the usage search, the higher the depth, the longer the query will take to complete. This search produces a text file in your output directory.
 
+### Search for direct dependencies from User Class
+When using the -userClassNames argument, the dependency search is inverted and instead you can search from a user class to dependencies. You can adjust the searchDepth like normal for how deep you want to search for transitive dependencies.
+
 ### Arguments
 Arg | Description | Default | Required
 ------------- | ------------- | --- | ---
@@ -102,7 +105,8 @@ searchUnusedOnly | Search for unused jars. Cannot be used in conjunction with se
 searchJarExclusions | Comma delimited regex for excluding jars from used/unused jar searches. Filters after inclusions | empty | no
 searchJarInclusions | Comma delimited regex for specifying which jars to include in used/unused searches. Filter before exclusions | empty | no
 filterResults | Enable filtering on results so only one dependency chain from user class to jar is present per jar | false | no
-
+userClassNames | Comma delimited list of user classes to search from | empty | no
+exactMatch | Enables exact matching on jar names and user class names. Searches are contains by default | false | no
 
 ### Performance
 Database construction is fairly performant. Searches on the other hand will vary wildly depending on the size and structure of your application. So be mindful of the search depth setting and start conservatively. Increasing the search depth increases search time and memory usage exponentially.
